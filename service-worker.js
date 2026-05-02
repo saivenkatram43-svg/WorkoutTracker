@@ -1,4 +1,4 @@
-const CACHE='myworkouts-v7';
+const CACHE='myworkouts-v8';
 const ASSETS=[
   './',
   './index.html',

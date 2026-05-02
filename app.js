@@ -1,10 +1,9 @@
-// MyWorkouts PWA v7
-// Full functionality + multi-set logging + watermark + 2-week progressive overload check
+// MyWorkouts PWA v8
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-const STORAGE_KEY = 'mw7';
+const STORAGE_KEY = 'mw8';
 let plan = null;
 
 let state = loadState();
@@ -30,7 +29,6 @@ function saveState(s=state){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
 }
 
-// date helpers
 function isoDate(d){ return d.toISOString().slice(0,10); }
 function parseISO(s){ const [y,m,dd]=s.split('-').map(Number); return new Date(y,m-1,dd); }
 function startOfWeek(d=new Date()){
@@ -48,11 +46,9 @@ function daysBetween(aISO, bISO){
   return Math.round((b-a)/(1000*60*60*24));
 }
 
-// sequencing
 function nextDayIndex(){ return (state.lastAssignedDayIndex % 5) + 1; }
 
 function ensureExerciseSets(exTemplate){
-  // Create array of set objects length = prescribed sets
   return Array.from({length: exTemplate.sets}, (_,i)=>({
     set: i+1,
     reps: exTemplate.reps,
@@ -75,7 +71,6 @@ function assignSessionIfMissing(dateKey){
   return session;
 }
 
-// UI
 const app = $('#app');
 let currentTab = 'train';
 let selectedDateKey = isoDate(new Date());
@@ -100,9 +95,8 @@ function render(){
   if(currentTab==='compare') return renderCompare();
 }
 
-// ---------- Watermark & progressive overload helpers ----------
+// watermark helpers
 function getPreviousWeights(dateKey, dayIndex, exName, setNum){
-  // Find the most recent previous session BEFORE dateKey with same dayIndex and exercise
   const keys = Object.keys(state.sessions).sort();
   const idx = keys.indexOf(dateKey);
   if(idx <= 0) return { last:null, twoWeeks:null };
@@ -110,7 +104,6 @@ function getPreviousWeights(dateKey, dayIndex, exName, setNum){
   let last = null;
   let twoWeeks = null;
 
-  // walk backwards
   for(let i=idx-1; i>=0; i--){
     const k = keys[i];
     const s = state.sessions[k];
@@ -123,7 +116,6 @@ function getPreviousWeights(dateKey, dayIndex, exName, setNum){
     }
   }
 
-  // two-week baseline: find a session at least 14 days earlier than dateKey
   for(let i=idx-1; i>=0; i--){
     const k = keys[i];
     const diff = daysBetween(k, dateKey);
@@ -153,24 +145,15 @@ function overloadWarningsForDay(dateKey){
       const cur = setObj.weight;
       if(typeof cur !== 'number' || isNaN(cur)) return;
       const prev = getPreviousWeights(dateKey, dayIndex, ex.name, setObj.set);
-      if(prev.twoWeeks){
-        if(cur < (prev.twoWeeks.weight + 1.5)){
-          warnings.push({
-            ex: ex.name,
-            set: setObj.set,
-            baseline: prev.twoWeeks.weight,
-            current: cur,
-            from: prev.twoWeeks.date
-          });
-        }
+      if(prev.twoWeeks && cur < (prev.twoWeeks.weight + 1.5)){
+        warnings.push({ex: ex.name, set: setObj.set});
       }
     });
   });
-
   return warnings;
 }
 
-// ---------- Train ----------
+// Train
 function renderTrain(){
   const wkStart = startOfWeek(parseISO(selectedDateKey));
   const days = Array.from({length:7}, (_,i)=> addDays(wkStart,i));
@@ -195,11 +178,7 @@ function renderTrain(){
   const selDay = plan.cycle.find(x=>x.dayIndex===selSession.dayIndex);
 
   const warnings = overloadWarningsForDay(selectedDateKey);
-  const warnHtml = warnings.length ? `
-    <div class='alert'>
-      Progressive overload check: ${warnings.length} set(s) are not +1.5kg vs 2 weeks ago. Push the weight up! 💪
-    </div>
-  ` : '';
+  const warnHtml = warnings.length ? `<div class='alert'>Overload check: push +1.5kg vs 2 weeks ago on some sets 💪</div>` : '';
 
   app.innerHTML = `
     ${warnHtml}
@@ -226,7 +205,7 @@ function renderTrain(){
         <span class='badge'>${selSession.done?'Done ✅':'Not done'}</span>
       </div>
 
-      <div class='note' style='margin-top:10px'>Enter weight + reps for each set. Placeholders show last time’s weight (watermark).</div>
+      <div class='note' style='margin-top:10px'>Enter weight + reps for each set. Placeholder shows last time’s weight.</div>
 
       <div style='margin-top:12px'>
         ${selDay.exercises.map(ex => renderExerciseBlock(selectedDateKey, ex)).join('')}
@@ -239,14 +218,9 @@ function renderTrain(){
     </div>
   `;
 
-  // calendar clicks
-  $$('.day[data-date]').forEach(el => {
-    el.onclick = () => { selectedDateKey = el.dataset.date; renderTrain(); };
-  });
-
+  $$('.day[data-date]').forEach(el => { el.onclick = () => { selectedDateKey = el.dataset.date; renderTrain(); }; });
   $('#prevWeek').onclick = () => { selectedDateKey = isoDate(addDays(wkStart,-7)); renderTrain(); };
   $('#nextWeek').onclick = () => { selectedDateKey = isoDate(addDays(wkStart, 7)); renderTrain(); };
-
   $('#markDone').onclick = () => { const s = assignSessionIfMissing(selectedDateKey); s.done=true; saveState(); renderTrain(); };
   $('#clearDay').onclick = () => { if(!confirm('Clear this day log?')) return; delete state.sessions[selectedDateKey]; saveState(); renderTrain(); };
 }
@@ -257,24 +231,17 @@ function renderExerciseBlock(dateKey, ex){
   const exState = session.exercises[ex.name] || { sets: ensureExerciseSets(ex) };
   session.exercises[ex.name] = exState;
 
-  // build rows
   const rows = exState.sets.map(setObj => {
     const prev = getPreviousWeights(dateKey, dayIndex, ex.name, setObj.set);
-    const watermark = prev.last ? `${prev.last.weight} kg` : '';
+    const watermark = prev.last ? `${prev.last.weight} lbs` : '';
     const wVal = (typeof setObj.weight === 'number' && !isNaN(setObj.weight)) ? setObj.weight : '';
     const rVal = (typeof setObj.reps === 'number' && !isNaN(setObj.reps)) ? setObj.reps : '';
 
     return `
       <tr>
-        <td><span class='badge'>Set ${setObj.set}</span></td>
-        <td>
-          <input class='setInput' inputmode='decimal' placeholder='${watermark || "kg"}' value='${wVal}'
-            data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' />
-        </td>
-        <td>
-          <input class='setInput' inputmode='numeric' placeholder='reps' value='${rVal}'
-            data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' />
-        </td>
+        <td><span class='setNum'>${setObj.set}</span></td>
+        <td><input class='setInput' inputmode='decimal' placeholder='${watermark || "lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+        <td><input class='setInput' inputmode='numeric' placeholder='reps' value='${rVal}' data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
       </tr>
     `;
   }).join('');
@@ -286,20 +253,12 @@ function renderExerciseBlock(dateKey, ex){
           <div class='exName'>${ex.name}</div>
           <div class='small'>${ex.sets} sets × ${ex.reps} reps</div>
         </div>
-        <span class='badge'>${ex.emoji || '🏋️'}</span>
+        <span class='badge'>${plan.cycle.find(x=>x.dayIndex===dayIndex).emoji}</span>
       </div>
 
       <table class='setTable'>
-        <thead>
-          <tr>
-            <th>Set</th>
-            <th>Weight (kg)</th>
-            <th>Reps</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
+        <thead><tr><th>#</th><th>Weight (lbs)</th><th>Reps</th></tr></thead>
+        <tbody>${rows}</tbody>
       </table>
     </div>
   `;
@@ -318,8 +277,7 @@ app.addEventListener('input', (e) => {
 
   const session = assignSessionIfMissing(dateKey);
   const exObj = session.exercises[exName];
-  if(!exObj) return;
-  const setObj = exObj.sets.find(x => x.set === setNum);
+  const setObj = exObj?.sets?.find(x => x.set === setNum);
   if(!setObj) return;
 
   if(kind === 'weight'){
@@ -333,10 +291,26 @@ app.addEventListener('input', (e) => {
   saveState();
 });
 
-// ---------- Measure ----------
+// Measure
 function avg(arr){
   if(!arr.length) return null;
   return arr.reduce((a,b)=>a+b,0)/arr.length;
+}
+function numOrNull(v){
+  const n = Number(v);
+  return isNaN(n) ? null : n;
+}
+function round1(n){ return Math.round(n*10)/10; }
+
+function groupDailyWeightsByWeek(){
+  const grouped = {};
+  Object.entries(state.measurements.dailyWeight).forEach(([date,val]) => {
+    const wk = weekKey(parseISO(date));
+    if(!grouped[wk]) grouped[wk] = [];
+    grouped[wk].push({date, val:Number(val)});
+  });
+  Object.keys(grouped).forEach(wk => grouped[wk].sort((a,b)=>a.date.localeCompare(b.date)));
+  return grouped;
 }
 
 function renderMeasure(){
@@ -345,29 +319,28 @@ function renderMeasure(){
   const dailyVal = state.measurements.dailyWeight[dk] ?? '';
   const wb = state.measurements.weeklyBody[wk] || {chest:null, bicep:null, waist:null, thigh:null};
 
-  // progression list
-  const weekKeys = Array.from(new Set([
-    ...Object.keys(state.measurements.weeklyBody || {}),
-    ...Object.keys(state.measurements.dailyWeight || {}).map(d => weekKey(parseISO(d)))
-  ])).sort();
+  const grouped = groupDailyWeightsByWeek();
+  const weeks = Object.keys(grouped).sort();
 
-  const progRows = weekKeys.map(w => {
-    const body = state.measurements.weeklyBody[w] || {};
-    const weights = Object.entries(state.measurements.dailyWeight)
-      .filter(([date,_]) => weekKey(parseISO(date)) === w)
-      .map(([_,v]) => Number(v))
-      .filter(v => !isNaN(v));
+  const weekLists = weeks.map(w => {
+    const list = grouped[w].map(x => `<div class='small'>${x.date}: <b>${x.val}</b> lbs</div>`).join('');
+    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list || '<div class=\'note\'>No weights</div>'}</div></div>`;
+  }).join('') || `<div class='note'>No daily weights recorded yet</div>`;
+
+  const progRows = weeks.map(w => {
+    const weights = grouped[w].map(x=>x.val).filter(v=>!isNaN(v));
     const wAvg = avg(weights);
+    const body = state.measurements.weeklyBody[w] || {};
     return `
-      <div class='item' style='align-items:flex-start'>
+      <div class='item'>
         <div>
           <div style='font-weight:900'>Week ${w}</div>
-          <div class='small'>Avg weight: ${wAvg===null?'—':wAvg.toFixed(1)+' kg'}</div>
+          <div class='small'>Avg weight: ${wAvg===null?'—':round1(wAvg)+' lbs'}</div>
           <div class='small'>Chest: ${body.chest ?? '—'} · Bicep: ${body.bicep ?? '—'} · Waist: ${body.waist ?? '—'} · Thigh: ${body.thigh ?? '—'}</div>
         </div>
       </div>
     `;
-  }).join('');
+  }).join('') || `<div class='note'>No progression data yet</div>`;
 
   app.innerHTML = `
     <div class='card'>
@@ -378,13 +351,16 @@ function renderMeasure(){
         </div>
         <button class='btn secondary' id='pickToday'>Today</button>
       </div>
-      <div class='label'>Weight (kg)</div>
+      <div class='label'>Weight (lbs)</div>
       <input class='input' id='dailyWeight' inputmode='decimal' value='${dailyVal}' placeholder='e.g., 61.0' />
       <div style='display:flex;gap:10px;margin-top:12px'>
         <button class='btn' id='saveDaily'>Record Entry</button>
         <button class='btn danger' id='clearDaily'>Clear Day</button>
       </div>
-      <div class='note' style='margin-top:10px'>Records and stores today’s weight entry.</div>
+
+      <div class='label' style='margin-top:14px'>Weekly daily weights</div>
+      <div class='note'>Week 1, Week 2… shows all daily weights you recorded in each week.</div>
+      <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${weekLists}</div>
     </div>
 
     <div class='card'>
@@ -405,20 +381,16 @@ function renderMeasure(){
         <button class='btn' id='saveWeekly'>Record Entry</button>
         <button class='btn danger' id='clearWeekly'>Clear Week</button>
       </div>
-      <div class='note' style='margin-top:10px'>Records and stores this week’s body measurements.</div>
     </div>
 
     <div class='card'>
       <div style='font-weight:900'>Progression</div>
-      <div class='note'>Shows weekly measurements + weekly average of daily weights.</div>
-      <div style='margin-top:10px' class='list'>
-        ${progRows || "<div class='note'>No progression data yet</div>"}
-      </div>
+      <div class='note'>Average weight here is computed from the daily weights shown above for each week.</div>
+      <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${progRows}</div>
     </div>
   `;
 
   $('#pickToday').onclick = () => { selectedDateKey = isoDate(new Date()); renderMeasure(); };
-
   $('#saveDaily').onclick = () => {
     const v = parseFloat($('#dailyWeight').value);
     if(isNaN(v)) return alert('Enter a valid number');
@@ -427,14 +399,12 @@ function renderMeasure(){
     alert('Daily weight saved ✅');
     renderMeasure();
   };
-
   $('#clearDaily').onclick = () => {
     if(!confirm('Clear daily weight for this day?')) return;
     delete state.measurements.dailyWeight[dk];
     saveState();
     renderMeasure();
   };
-
   $('#saveWeekly').onclick = () => {
     state.measurements.weeklyBody[wk] = {
       chest: numOrNull($('#m_chest').value),
@@ -446,7 +416,6 @@ function renderMeasure(){
     alert('Weekly measurements saved ✅');
     renderMeasure();
   };
-
   $('#clearWeekly').onclick = () => {
     if(!confirm('Clear weekly measurements for this week?')) return;
     delete state.measurements.weeklyBody[wk];
@@ -463,7 +432,7 @@ function measureField(label, key, val){
   `;
 }
 
-// ---------- Photos ----------
+// Photos (unchanged from v7)
 function renderPhotos(){
   const allWeeks = Object.keys(state.photos || {}).sort().reverse();
   const currentWeek = weekKey(parseISO(selectedDateKey));
@@ -589,74 +558,29 @@ function fileToDataURL(file){
   });
 }
 
-// ---------- Compare (graphs) ----------
+// Compare: ONLY daily weights graph + workout progress graph
 function renderCompare(){
   app.innerHTML = `
     <div class='card'>
       <div style='font-weight:900'>Compare</div>
-      <div class='note'>Graphs come from Measure + Train logs (stored locally).</div>
+      <div class='note'>Only two graphs: Daily Weight + Workout Progress by Week.</div>
     </div>
 
     <div class='card'>
-      <div style='font-weight:900'>Daily Weight (kg)</div>
+      <div style='font-weight:900'>Daily Weight (lbs)</div>
       <div class='chartWrap'><div id='chartDaily'></div></div>
     </div>
 
     <div class='card'>
-      <div style='font-weight:900'>Weekly Body Measurements (cm)</div>
-      <div class='small'>One combined graph (chest, bicep, waist, thigh)</div>
-      <div class='chartWrap'><div id='chartBody'></div></div>
-    </div>
-
-    <div class='card'>
-      <div style='font-weight:900'>Workout Day-by-Day Compare</div>
-      <div class='small'>Pick a workout day, see all exercises across weeks (avg of sets)</div>
-      <div style='display:flex;gap:10px;align-items:center;margin-top:10px'>
-        <span class='badge'>Day</span>
-        <select id='compareDay' class='input' style='max-width:180px'>
-          <option value='1'>Day 1</option>
-          <option value='2'>Day 2</option>
-          <option value='3'>Day 3</option>
-          <option value='4'>Day 4</option>
-          <option value='5'>Day 5</option>
-        </select>
-      </div>
-      <div class='chartWrap'><div id='chartDayExercises'></div></div>
-    </div>
-
-    <div class='card'>
-      <div style='font-weight:900'>Workout Weights by Week</div>
-      <div class='small'>Avg weight across all exercises/sets per workout day</div>
+      <div style='font-weight:900'>Workout Progress by Week</div>
+      <div class='small'>Week 1 Workout 1 vs Week 2 Workout 1… (same workout across weeks)</div>
       <div class='chartWrap'><div id='chartWorkout'></div></div>
+      <div class='note' style='margin-top:10px'>Each line is Workout Day 1..5. Value = average of all weights you logged for that workout in that week.</div>
     </div>
   `;
 
-  const daily = buildDailyWeightSeries();
-  const body = buildWeeklyBodySeries();
-  const work = buildWorkoutWeeklySeries();
-  const dayIdx = state._compareDayIndex || 1;
-  const daySeries = buildWorkoutDayExerciseSeries(dayIdx);
-
-  renderLineChart('#chartDaily', daily);
-  renderLineChart('#chartBody', body);
-  renderLineChart('#chartWorkout', work);
-  renderLineChart('#chartDayExercises', daySeries);
-
-  const sel = $('#compareDay');
-  if(sel){
-    sel.value = String(dayIdx);
-    sel.onchange = () => { state._compareDayIndex = Number(sel.value); saveState(); renderCompare(); };
-  }
-}
-
-function numOrNull(v){
-  const n = Number(v);
-  return isNaN(n) ? null : n;
-}
-function round1(n){ return Math.round(n*10)/10; }
-function avg(arr){
-  if(!arr.length) return null;
-  return arr.reduce((a,b)=>a+b,0)/arr.length;
+  renderLineChart('#chartDaily', buildDailyWeightSeries());
+  renderLineChart('#chartWorkout', buildWorkoutWeeklySeries());
 }
 
 function buildDailyWeightSeries(){
@@ -669,73 +593,13 @@ function buildDailyWeightSeries(){
   return [{name:'Weight', color:'#2563eb', labels, values}];
 }
 
-function buildWeeklyBodySeries(){
-  const entries = Object.entries(state.measurements.weeklyBody)
-    .map(([wk,o]) => ({wk,o}))
-    .sort((a,b)=>a.wk.localeCompare(b.wk));
-  const labels = entries.map(x=>x.wk);
-  const chest = entries.map(x=>numOrNull(x.o.chest));
-  const bicep = entries.map(x=>numOrNull(x.o.bicep));
-  const waist = entries.map(x=>numOrNull(x.o.waist));
-  const thigh = entries.map(x=>numOrNull(x.o.thigh));
-  return [
-    {name:'Chest', color:'#f97316', labels, values: chest},
-    {name:'Bicep', color:'#a78bfa', labels, values: bicep},
-    {name:'Waist', color:'#22c55e', labels, values: waist},
-    {name:'Thigh', color:'#eab308', labels, values: thigh}
-  ];
-}
-
-function exerciseAvgWeight(exObj){
-  const weights = (exObj?.sets || []).map(s => s.weight).filter(w => typeof w==='number' && !isNaN(w));
-  const a = avg(weights);
-  return a===null ? null : round1(a);
-}
-
-function buildWorkoutDayExerciseSeries(dayIndex){
-  const day = plan.cycle.find(x => x.dayIndex === dayIndex);
-  if(!day) return [];
-
-  // week -> exName -> [avgWeightPerSession]
-  const buckets = {};
-  Object.entries(state.sessions).forEach(([dateKey, sess]) => {
-    if(sess.dayIndex !== dayIndex) return;
-    const wk = weekKey(parseISO(dateKey));
-    if(!buckets[wk]) buckets[wk] = {};
-
-    day.exercises.forEach(ex => {
-      const exObj = sess.exercises?.[ex.name];
-      const v = exerciseAvgWeight(exObj);
-      if(v===null) return;
-      if(!buckets[wk][ex.name]) buckets[wk][ex.name] = [];
-      buckets[wk][ex.name].push(v);
-    });
-  });
-
-  const weekLabels = Object.keys(buckets).sort();
-  if(!weekLabels.length) return [{name:'No data', color:'#2563eb', labels:[], values:[]}];
-
-  const palette = ['#2563eb','#f97316','#22c55e','#a78bfa','#eab308','#fb7185','#34d399','#38bdf8'];
-  return day.exercises.map((ex, idx) => {
-    const vals = weekLabels.map(wk => {
-      const arr = buckets[wk]?.[ex.name] || [];
-      const a = avg(arr);
-      return a===null ? null : round1(a);
-    });
-    return {name: ex.name, color: palette[idx % palette.length], labels: weekLabels, values: vals};
-  });
-}
-
 function buildWorkoutWeeklySeries(){
-  // week -> dayIndex -> [avgWeightForThatSession]
-  const buckets = {};
-
+  const buckets = {}; // wk -> dayIndex -> [weights]
   Object.entries(state.sessions).forEach(([dateKey, sess]) => {
     const wk = weekKey(parseISO(dateKey));
     if(!buckets[wk]) buckets[wk] = {};
     if(!buckets[wk][sess.dayIndex]) buckets[wk][sess.dayIndex] = [];
 
-    // compute session average across all ex/set weights
     const allWeights = [];
     Object.values(sess.exercises || {}).forEach(exObj => {
       (exObj.sets || []).forEach(s => {
@@ -755,7 +619,7 @@ function buildWorkoutWeeklySeries(){
       const a = avg(arr);
       return a===null ? null : round1(a);
     });
-    out.push({name:`Day ${di}`, color: colors[di-1], labels, values: vals});
+    out.push({name:`Workout ${di}`, color: colors[di-1], labels, values: vals});
   }
   return out;
 }
@@ -843,7 +707,6 @@ function escapeHTML(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt
 function escapeAttr(s){ return escapeHTML(s).replace(/\"/g,'&quot;'); }
 function unescapeAttr(s){ return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'\"'); }
 
-// boot
 function boot(){
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('./service-worker.js'); }
   wireTabs();
