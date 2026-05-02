@@ -1,51 +1,39 @@
-*{box-sizing:border-box}html,body{height:100%}
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial;background:#0b1220;color:#e5e7eb}
-.topbar{padding:18px 16px 12px;position:sticky;top:0;background:linear-gradient(180deg,#0b1220 0%, rgba(11,18,32,.92) 100%);backdrop-filter:blur(10px);z-index:10}
-.title{font-size:22px;font-weight:900}
-.subtitle{opacity:.75;font-size:13px;margin-top:4px}
-.container{padding:14px 14px calc(110px + env(safe-area-inset-bottom));max-width:920px;margin:0 auto}
-.card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:14px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.tile{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:18px;font-weight:900;text-align:center}
-.tile small{display:block;opacity:.75;font-weight:700;margin-top:6px}
 
-.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;padding:12px 12px calc(12px + env(safe-area-inset-bottom));background:rgba(2,6,23,.92);border-top:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px)}
-.tab{flex:1;padding:14px 8px;border-radius:16px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.07);color:#e5e7eb;font-weight:900;font-size:15px}
-.tab.active{background:#2563eb;border-color:#2563eb}
+body{
+  margin:0;
+  font-family:-apple-system, BlinkMacSystemFont, Segoe UI, Roboto;
+  background:#f4f7fb;
+  color:#1f2937;
+}
+.topbar{padding:16px;background:#ffffff;border-bottom:1px solid #e5e7eb}
+.title{font-size:20px;font-weight:800}
+.subtitle{font-size:12px;color:#64748b}
+.container{padding:16px 16px 120px}
 
-.calendar7{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
-.day{padding:12px 10px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);text-align:center}
-.day .d{font-weight:900}
-.day .s{opacity:.75;font-size:12px;margin-top:4px}
-.day.done{background:rgba(22,163,74,.25);border-color:rgba(22,163,74,.45)}
-.day.selected{outline:2px solid #60a5fa}
+.card{
+  background:#ffffff;
+  border:1px solid #e5e7eb;
+  border-radius:16px;
+  padding:14px;
+  margin-bottom:12px;
+  box-shadow:0 6px 16px rgba(0,0,0,0.05);
+}
 
-.btn{background:#2563eb;color:white;border:none;padding:10px 12px;border-radius:12px;font-weight:900}
-.btn.secondary{background:rgba(255,255,255,.12)}
-.btn.danger{background:#dc2626}
+.tabs{
+  position:fixed;bottom:0;left:0;right:0;
+  display:flex;gap:8px;
+  padding:10px;background:#ffffff;border-top:1px solid #e5e7eb
+}
+.tab{
+  flex:1;padding:12px;border-radius:12px;
+  background:#e5e7eb;border:none;font-weight:700
+}
+.tab.active{background:#3b82f6;color:white}
 
-.label{font-size:12px;opacity:.75;margin:10px 0 6px}
-.input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:#e5e7eb}
-.row{display:flex;gap:10px;align-items:center;justify-content:space-between}
-.row input{width:90px}
-.list{display:flex;flex-direction:column;gap:8px}
-.item{padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.05);display:flex;justify-content:space-between;align-items:center;gap:10px}
-.small{opacity:.7;font-size:12px}
-.badge{font-size:12px;font-weight:900;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.12)}
+.btn{background:#3b82f6;color:white;border:none;border-radius:12px;padding:10px 14px;font-weight:700}
+.btn.secondary{background:#e5e7eb;color:#111827}
+.btn.danger{background:#ef4444;color:white}
 
-.chartWrap{overflow-x:auto}
-svg.chart{width:100%;min-width:560px;height:260px;display:block;background:rgba(0,0,0,.12);border-radius:14px;border:1px solid rgba(255,255,255,.08)}
-.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.legend span{display:flex;gap:6px;align-items:center;font-size:12px;opacity:.9}
-.dot{width:10px;height:10px;border-radius:50%}
-.note{opacity:.75;font-size:12px;line-height:1.4}
+.input{width:100%;padding:10px;border-radius:10px;border:1px solid #e5e7eb}
 
-/* Photos: story-style week circles (Instagram highlights vibe) */
-.storyBar{display:flex;gap:12px;overflow-x:auto;padding:8px 2px 6px;-webkit-overflow-scrolling:touch}
-.storyBar::-webkit-scrollbar{display:none}
-.story{flex:0 0 auto;text-align:center;width:74px}
-.storyRing{width:64px;height:64px;border-radius:999px;padding:3px;background:linear-gradient(45deg,#f59e0b,#ef4444,#a855f7,#2563eb)}
-.storyInner{width:100%;height:100%;border-radius:999px;background:rgba(255,255,255,.10);border:2px solid rgba(11,18,32,.9);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
-.storyInner img{width:100%;height:100%;object-fit:cover}
-.storyStamp{position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:900;padding:2px 6px;border-radius:999px;background:rgba(2,6,23,.75);border:1px solid rgba(255,255,255,.14)}
-.storyLabel{margin-top:6px;font-size:11px;opacity:.8;font-weight:800;white-space:nowrap}
+.note{font-size:12px;color:#64748b}
