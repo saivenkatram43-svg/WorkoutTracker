@@ -1,9 +1,7 @@
-// MyWorkouts PWA v11
-
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-const STORAGE_KEY = 'mw11';
+const STORAGE_KEY = 'mw10';
 let plan = null;
 
 let state = loadState();
@@ -48,71 +46,94 @@ function ensureExerciseSets(exTemplate){
   return Array.from({length: exTemplate.sets}, (_,i)=>({ set:i+1, reps: exTemplate.reps, weight:null }));
 }
 
+function buildSessionForDayIndex(dayIndex){
+  const day = plan.cycle.find(x => x.dayIndex === dayIndex);
+  const exercises = {};
+  day.exercises.forEach(ex => { exercises[ex.name] = { sets: ensureExerciseSets(ex) }; });
+  return { dayIndex, done:false, exercises };
+}
+
 function assignSessionIfMissing(dateKey){
   if(state.sessions[dateKey]) return state.sessions[dateKey];
   const di = nextDayIndex();
   state.lastAssignedDayIndex = di;
-  const session = { dayIndex: di, done:false, absFocus:'None', exercises:{} };
-  const day = plan.cycle.find(x => x.dayIndex === di);
-  day.exercises.forEach(ex => { session.exercises[ex.name] = { sets: ensureExerciseSets(ex) }; });
-  state.sessions[dateKey] = session;
+  state.sessions[dateKey] = buildSessionForDayIndex(di);
   saveState();
-  return session;
+  return state.sessions[dateKey];
 }
 
+function setWorkoutForDate(dateKey, newDayIndex){
+  const existing = state.sessions[dateKey];
+  if(existing){
+    // If there is any logged weight, confirm reset
+    const hasData = Object.values(existing.exercises||{}).some(exObj => (exObj.sets||[]).some(s => typeof s.weight==='number' || typeof s.reps==='number'));
+    if(hasData){
+      if(!confirm('Changing workout will reset logged sets for this date. Continue?')) return;
+    }
+  }
+  state.sessions[dateKey] = buildSessionForDayIndex(newDayIndex);
+  state.lastAssignedDayIndex = newDayIndex; // keep cycle aligned
+  saveState();
+}
+
+// UI
 const app = $('#app');
-let currentTab='train';
+let currentTab = 'train';
 let selectedDateKey = isoDate(new Date());
 
 function setActiveTab(tab){
-  currentTab=tab;
-  $$('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  currentTab = tab;
+  $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab===tab));
   render();
 }
-function wireTabs(){ $$('.tab').forEach(btn=>btn.addEventListener('click', ()=>setActiveTab(btn.dataset.tab))); }
+function wireTabs(){ $$('.tab').forEach(btn => btn.addEventListener('click', () => setActiveTab(btn.dataset.tab))); }
 
 function render(){
-  if(!plan){ app.innerHTML = `<div class='card'><div style='font-weight:900'>Loading…</div><div class='note'>Fetching workout plan.</div></div>`; return; }
+  if(!plan){
+    app.innerHTML = `<div class='card'><div style='font-weight:900'>Loading…</div><div class='note'>Fetching workout plan.</div></div>`;
+    return;
+  }
   if(currentTab==='train') return renderTrain();
   if(currentTab==='measure') return renderMeasure();
   if(currentTab==='photos') return renderPhotos();
   if(currentTab==='compare') return renderCompare();
 }
 
-// watermark helpers
+// Watermark + overload
 function getPreviousWeights(dateKey, dayIndex, exName, setNum){
   const keys = Object.keys(state.sessions).sort();
   const idx = keys.indexOf(dateKey);
-  if(idx<=0) return {last:null,twoWeeks:null};
+  if(idx <= 0) return { last:null, twoWeeks:null };
   let last=null, twoWeeks=null;
 
   for(let i=idx-1;i>=0;i--){
-    const k=keys[i]; const s=state.sessions[k];
-    if(!s || s.dayIndex!==dayIndex) continue;
-    const w=s.exercises?.[exName]?.sets?.find(x=>x.set===setNum)?.weight;
-    if(typeof w==='number' && !isNaN(w)){ last={date:k,weight:w}; break; }
+    const k=keys[i], s=state.sessions[k];
+    if(!s||s.dayIndex!==dayIndex) continue;
+    const w = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum)?.weight;
+    if(typeof w==='number'&&!isNaN(w)){ last={date:k,weight:w}; break; }
   }
 
   for(let i=idx-1;i>=0;i--){
     const k=keys[i];
     if(daysBetween(k,dateKey)<14) continue;
     const s=state.sessions[k];
-    if(!s || s.dayIndex!==dayIndex) continue;
-    const w=s.exercises?.[exName]?.sets?.find(x=>x.set===setNum)?.weight;
-    if(typeof w==='number' && !isNaN(w)){ twoWeeks={date:k,weight:w}; break; }
+    if(!s||s.dayIndex!==dayIndex) continue;
+    const w = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum)?.weight;
+    if(typeof w==='number'&&!isNaN(w)){ twoWeeks={date:k,weight:w}; break; }
   }
-  return {last,twoWeeks};
+  return { last, twoWeeks };
 }
 
 function overloadWarningsForDay(dateKey){
-  const session=assignSessionIfMissing(dateKey);
-  const dayIndex=session.dayIndex;
-  const day=plan.cycle.find(x=>x.dayIndex===dayIndex);
+  const session = assignSessionIfMissing(dateKey);
+  const dayIndex = session.dayIndex;
+  const day = plan.cycle.find(x=>x.dayIndex===dayIndex);
   const warnings=[];
   day.exercises.forEach(ex=>{
-    session.exercises[ex.name].sets.forEach(setObj=>{
+    const exState=session.exercises[ex.name];
+    exState.sets.forEach(setObj=>{
       const cur=setObj.weight;
-      if(typeof cur!=='number' || isNaN(cur)) return;
+      if(typeof cur!=='number'||isNaN(cur)) return;
       const prev=getPreviousWeights(dateKey, dayIndex, ex.name, setObj.set);
       if(prev.twoWeeks && cur < (prev.twoWeeks.weight + 1.5)) warnings.push(1);
     });
@@ -120,28 +141,40 @@ function overloadWarningsForDay(dateKey){
   return warnings.length;
 }
 
-// Train (lbs)
+// Train
 function renderTrain(){
-  const wkStart=startOfWeek(parseISO(selectedDateKey));
-  const days=Array.from({length:7},(_,i)=>addDays(wkStart,i));
+  const wkStart = startOfWeek(parseISO(selectedDateKey));
+  const days = Array.from({length:7}, (_,i)=> addDays(wkStart,i));
 
-  const cells=days.map(d=>{
+  const cells = days.map(d=>{
     const dk=isoDate(d);
-    const s=state.sessions[dk];
-    const done=s?.done; const di=s?.dayIndex;
+    const session=state.sessions[dk];
+    const done=session?.done;
+    const di=session?.dayIndex;
     const isSel=dk===selectedDateKey;
     const emoji=di?plan.cycle.find(x=>x.dayIndex===di).emoji:'';
-    return `<div class='day ${done?'done':''} ${isSel?'selected':''}' data-date='${dk}'>
-      <div class='d'>${d.toLocaleDateString(undefined,{weekday:'short'})}</div>
-      <div class='s'>${d.getDate()}</div>
-      <div class='s'>${di?`Day ${di} ${emoji}`:'Tap'}</div>
-    </div>`;
+    return `
+      <div class='day ${done?'done':''} ${isSel?'selected':''}' data-date='${dk}'>
+        <div class='d'>${d.toLocaleDateString(undefined,{weekday:'short'})}</div>
+        <div class='s'>${d.getDate()}</div>
+        <div class='s'>${di?`Day ${di} ${emoji}`:'Tap'}</div>
+      </div>`;
   }).join('');
 
-  const session=assignSessionIfMissing(selectedDateKey);
-  const day=plan.cycle.find(x=>x.dayIndex===session.dayIndex);
-  const warnCount=overloadWarningsForDay(selectedDateKey);
-  const warnHtml=warnCount?`<div class='alert'>Overload check: push +1.5 lbs vs 2 weeks ago on some sets 💪</div>`:'';
+  const selSession = assignSessionIfMissing(selectedDateKey);
+  const selDay = plan.cycle.find(x=>x.dayIndex===selSession.dayIndex);
+
+  const warnCount = overloadWarningsForDay(selectedDateKey);
+  const warnHtml = warnCount ? `<div class='alert'>Overload check: push +1.5 lbs vs 2 weeks ago on some sets 💪</div>` : '';
+
+  const dropdown = `
+    <div style='margin-top:10px;display:flex;gap:10px;align-items:center'>
+      <span class='badge'>Workout</span>
+      <select id='workoutSelect' class='input' style='max-width:220px'>
+        ${plan.cycle.map(d=>`<option value='${d.dayIndex}'>Day ${d.dayIndex} · ${d.label}</option>`).join('')}
+      </select>
+      <span class='small'>Change workout for this date</span>
+    </div>`;
 
   app.innerHTML = `
     ${warnHtml}
@@ -149,7 +182,7 @@ function renderTrain(){
       <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
         <div>
           <div style='font-weight:900'>Week of ${isoDate(wkStart)}</div>
-          <div class='small'>Tap a day to log the next workout</div>
+          <div class='small'>Tap a day to log, or choose workout from dropdown</div>
         </div>
         <div style='display:flex;gap:8px'>
           <button class='btn secondary' id='prevWeek'>←</button>
@@ -162,54 +195,49 @@ function renderTrain(){
     <div class='card'>
       <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:10px'>
         <div>
-          <div style='font-weight:900'>Day ${day.dayIndex}: ${day.title}</div>
+          <div style='font-weight:900'>Day ${selDay.dayIndex}: ${selDay.title}</div>
           <div class='small'>${selectedDateKey}</div>
+          ${dropdown}
         </div>
-        <span class='badge'>${session.done?'Done ✅':'Not done'}</span>
+        <span class='badge'>${selSession.done?'Done ✅':'Not done'}</span>
       </div>
 
-      <div style='margin-top:10px'>
-        <div class='label'>Abs add-on for today</div>
-        <select id='absSelect' class='input' style='max-width:260px'>
-          ${['None','Chest','Back','Shoulders','Legs'].map(opt=>`<option value='${opt}' ${session.absFocus===opt?'selected':''}>${opt}</option>`).join('')}
-        </select>
-        <div class='note' style='margin-top:6px'>Saved per day.</div>
-      </div>
-
-      <div class='note' style='margin-top:10px'>Enter weight + reps for each set. Train uses <b>lbs</b>. Placeholders show last time’s weight.</div>
-
-      <div style='margin-top:12px'>${day.exercises.map(ex=>renderExerciseBlock(selectedDateKey, ex)).join('')}</div>
+      <div class='note' style='margin-top:10px'>Enter weight + reps for each set. Placeholder shows last time’s weight.</div>
+      <div style='margin-top:12px'>${selDay.exercises.map(ex=>renderExerciseBlock(selectedDateKey, ex)).join('')}</div>
 
       <div style='display:flex;gap:10px;margin-top:12px'>
         <button class='btn' id='markDone'>Mark Workout Done</button>
         <button class='btn danger' id='clearDay'>Clear This Day</button>
       </div>
-    </div>
-  `;
+    </div>`;
 
+  // calendar
   $$('.day[data-date]').forEach(el=>{ el.onclick=()=>{ selectedDateKey=el.dataset.date; renderTrain(); }; });
   $('#prevWeek').onclick=()=>{ selectedDateKey=isoDate(addDays(wkStart,-7)); renderTrain(); };
   $('#nextWeek').onclick=()=>{ selectedDateKey=isoDate(addDays(wkStart, 7)); renderTrain(); };
   $('#markDone').onclick=()=>{ const s=assignSessionIfMissing(selectedDateKey); s.done=true; saveState(); renderTrain(); };
   $('#clearDay').onclick=()=>{ if(!confirm('Clear this day log?')) return; delete state.sessions[selectedDateKey]; saveState(); renderTrain(); };
 
-  $('#absSelect').onchange = (e)=>{ session.absFocus = e.target.value; saveState(); };
+  // dropdown selection
+  const sel = $('#workoutSelect');
+  if(sel){
+    sel.value = String(selSession.dayIndex);
+    sel.onchange = ()=>{ setWorkoutForDate(selectedDateKey, Number(sel.value)); renderTrain(); };
+  }
 }
 
 function renderExerciseBlock(dateKey, ex){
-  const session=assignSessionIfMissing(dateKey);
-  const dayIndex=session.dayIndex;
-  const exState=session.exercises[ex.name] || {sets:ensureExerciseSets(ex)};
-  session.exercises[ex.name]=exState;
-
-  const rows=exState.sets.map(setObj=>{
-    const prev=getPreviousWeights(dateKey, dayIndex, ex.name, setObj.set);
-    const watermark=prev.last?`${prev.last.weight} lbs`:'';
-    const wVal=(typeof setObj.weight==='number' && !isNaN(setObj.weight))?setObj.weight:'';
-    const rVal=(typeof setObj.reps==='number' && !isNaN(setObj.reps))?setObj.reps:'';
+  const session = assignSessionIfMissing(dateKey);
+  const dayIndex = session.dayIndex;
+  const exState = session.exercises[ex.name];
+  const rows = exState.sets.map(setObj=>{
+    const prev = getPreviousWeights(dateKey, dayIndex, ex.name, setObj.set);
+    const watermark = prev.last ? `${prev.last.weight} lbs` : '';
+    const wVal = (typeof setObj.weight==='number' && !isNaN(setObj.weight)) ? setObj.weight : '';
+    const rVal = (typeof setObj.reps==='number' && !isNaN(setObj.reps)) ? setObj.reps : '';
     return `<tr>
       <td><span class='setNum'>${setObj.set}</span></td>
-      <td><input class='setInput' inputmode='decimal' placeholder='${watermark||"lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+      <td><input class='setInput' inputmode='decimal' placeholder='${watermark || "lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
       <td><input class='setInput' inputmode='numeric' placeholder='reps' value='${rVal}' data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
     </tr>`;
   }).join('');
@@ -229,11 +257,11 @@ function renderExerciseBlock(dateKey, ex){
   </div>`;
 }
 
-// Save set inputs
+// save set input
 app.addEventListener('input', (e)=>{
   const t=e.target;
   if(!(t instanceof HTMLInputElement)) return;
-  if(!t.dataset.kind || !t.dataset.date || !t.dataset.ex || !t.dataset.set) return;
+  if(!t.dataset.kind||!t.dataset.date||!t.dataset.ex||!t.dataset.set) return;
   const dateKey=t.dataset.date;
   const exName=unescapeAttr(t.dataset.ex);
   const setNum=Number(t.dataset.set);
@@ -241,13 +269,18 @@ app.addEventListener('input', (e)=>{
   const session=assignSessionIfMissing(dateKey);
   const setObj=session.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
   if(!setObj) return;
-  if(kind==='weight'){ const w=parseFloat(t.value); setObj.weight=isNaN(w)?null:w; }
-  if(kind==='reps'){ const r=parseInt(t.value,10); setObj.reps=isNaN(r)?null:r; }
+  if(kind==='weight'){
+    const w=parseFloat(t.value);
+    setObj.weight = isNaN(w)?null:w;
+  } else {
+    const r=parseInt(t.value,10);
+    setObj.reps = isNaN(r)?null:r;
+  }
   saveState();
 });
 
-// Measure (kg)
-function avg(arr){ return arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null; }
+// Measure (weekly lists + progression)
+function avg(arr){ if(!arr.length) return null; return arr.reduce((a,b)=>a+b,0)/arr.length; }
 function round1(n){ return Math.round(n*10)/10; }
 function numOrNull(v){ const n=Number(v); return isNaN(n)?null:n; }
 
@@ -263,17 +296,17 @@ function groupDailyWeightsByWeek(){
 }
 
 function renderMeasure(){
-  const dk=selectedDateKey||isoDate(new Date());
-  const wk=weekKey(parseISO(dk));
-  const dailyVal=state.measurements.dailyWeight[dk] ?? '';
-  const wb=state.measurements.weeklyBody[wk] || {chest:null,bicep:null,waist:null,thigh:null};
+  const dk = selectedDateKey;
+  const wk = weekKey(parseISO(dk));
+  const dailyVal = state.measurements.dailyWeight[dk] ?? '';
+  const wb = state.measurements.weeklyBody[wk] || {chest:null,bicep:null,waist:null,thigh:null};
 
-  const grouped=groupDailyWeightsByWeek();
-  const weeks=Object.keys(grouped).sort();
+  const grouped = groupDailyWeightsByWeek();
+  const weeks = Object.keys(grouped).sort();
 
   const weekLists = weeks.map(w=>{
     const list = grouped[w].map(x=>`<div class='small'>${x.date}: <b>${x.val}</b> kg</div>`).join('');
-    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list || '<div class=\'note\'>No weights</div>'}</div></div>`;
+    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list}</div></div>`;
   }).join('') || `<div class='note'>No daily weights recorded yet</div>`;
 
   const progRows = weeks.map(w=>{
@@ -300,7 +333,7 @@ function renderMeasure(){
         <button class='btn danger' id='clearDaily'>Clear Day</button>
       </div>
       <div class='label' style='margin-top:14px'>Weekly daily weights</div>
-      <div class='note'>Shows all daily weights stored each week.</div>
+      <div class='note'>Shows all daily weights recorded in each week.</div>
       <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${weekLists}</div>
     </div>
 
@@ -321,63 +354,46 @@ function renderMeasure(){
 
     <div class='card'>
       <div style='font-weight:900'>Progression</div>
-      <div class='note'>Average weight is computed from the weekly daily-weight list above.</div>
+      <div class='note'>Average weight is computed from the weekly daily weights shown above.</div>
       <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${progRows}</div>
-    </div>
-  `;
+    </div>`;
 
-  $('#pickToday').onclick=()=>{ selectedDateKey=isoDate(new Date()); renderMeasure(); };
-  $('#saveDaily').onclick=()=>{
-    const v=parseFloat($('#dailyWeight').value);
-    if(isNaN(v)) return alert('Enter a valid number');
-    state.measurements.dailyWeight[dk]=v;
-    saveState();
-    alert('Daily weight saved ✅');
-    renderMeasure();
-  };
-  $('#clearDaily').onclick=()=>{ if(!confirm('Clear daily weight for this day?')) return; delete state.measurements.dailyWeight[dk]; saveState(); renderMeasure(); };
-  $('#saveWeekly').onclick=()=>{
-    state.measurements.weeklyBody[wk]={
-      chest:numOrNull($('#m_chest').value),
-      bicep:numOrNull($('#m_bicep').value),
-      waist:numOrNull($('#m_waist').value),
-      thigh:numOrNull($('#m_thigh').value)
-    };
-    saveState();
-    alert('Weekly measurements saved ✅');
-    renderMeasure();
-  };
-  $('#clearWeekly').onclick=()=>{ if(!confirm('Clear weekly measurements for this week?')) return; delete state.measurements.weeklyBody[wk]; saveState(); renderMeasure(); };
+  $('#pickToday').onclick = ()=>{ selectedDateKey = isoDate(new Date()); renderMeasure(); };
+  $('#saveDaily').onclick = ()=>{ const v=parseFloat($('#dailyWeight').value); if(isNaN(v)) return alert('Enter a valid number'); state.measurements.dailyWeight[dk]=v; saveState(); renderMeasure(); };
+  $('#clearDaily').onclick = ()=>{ if(!confirm('Clear daily weight for this day?')) return; delete state.measurements.dailyWeight[dk]; saveState(); renderMeasure(); };
+  $('#saveWeekly').onclick = ()=>{ state.measurements.weeklyBody[wk] = { chest:numOrNull($('#m_chest').value), bicep:numOrNull($('#m_bicep').value), waist:numOrNull($('#m_waist').value), thigh:numOrNull($('#m_thigh').value) }; saveState(); renderMeasure(); };
+  $('#clearWeekly').onclick = ()=>{ if(!confirm('Clear weekly measurements for this week?')) return; delete state.measurements.weeklyBody[wk]; saveState(); renderMeasure(); };
 }
 
 function measureField(label,key,val){
-  const v=(val ?? '')===null?'':(val ?? '');
+  const v=(val??'')===null?'':(val??'');
   return `<div class='label'>${label} (cm)</div><input class='input' id='m_${key}' inputmode='decimal' value='${v}' placeholder='e.g., 95' />`;
 }
 
 // Photos (same as v8)
 function renderPhotos(){
-  const allWeeks=Object.keys(state.photos||{}).sort().reverse();
-  const currentWeek=weekKey(parseISO(selectedDateKey));
-  const chosenWeek=state._photoWeek||currentWeek;
-  const items=state.photos[chosenWeek]||[];
+  const allWeeks = Object.keys(state.photos || {}).sort().reverse();
+  const currentWeek = weekKey(parseISO(selectedDateKey));
+  const chosenWeek = state._photoWeek || currentWeek;
+  const items = state.photos[chosenWeek] || [];
 
-  const stories = allWeeks.length ? allWeeks.map(wk=>{
-    const first=(state.photos[wk]||[])[0];
-    const stamp=wk.slice(5);
-    const isSel=wk===chosenWeek;
-    return `<div class='story' data-week='${wk}'>
-      <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
-        <div class='storyInner'>
-          ${first?`<img src='${first}' alt='week ${wk}'/>`:`<div style='font-weight:900'>📸</div>`}
-          <div class='storyStamp'>${stamp}</div>
+  const stories = allWeeks.length ? allWeeks.map(wk => {
+    const first = (state.photos[wk] || [])[0];
+    const stamp = wk.slice(5);
+    const isSel = wk === chosenWeek;
+    return `
+      <div class='story' data-week='${wk}'>
+        <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
+          <div class='storyInner'>
+            ${first ? `<img src='${first}' alt='week ${wk}'/>` : `<div style='font-weight:900'>📸</div>`}
+            <div class='storyStamp'>${stamp}</div>
+          </div>
         </div>
-      </div>
-      <div class='storyLabel'>Week ${stamp}</div>
-    </div>`;
+        <div class='storyLabel'>Week ${stamp}</div>
+      </div>`;
   }).join('') : `<div class='note'>No weekly photos yet. Upload your first week below.</div>`;
 
-  const pendingCount=(state._pendingPhotos||[]).length;
+  const pendingCount = (state._pendingPhotos || []).length;
 
   app.innerHTML = `
     <div class='card'>
@@ -399,28 +415,24 @@ function renderPhotos(){
 
       <div class='label'>Choose photos</div>
       <input class='input' style='padding:10px' id='photoInput' type='file' accept='image/*' multiple />
-
       <div style='display:flex;gap:10px;margin-top:12px'>
         <button class='btn' id='savePhotos'>Record Uploads (${pendingCount})</button>
         <button class='btn secondary' id='clearPending'>Clear Selected</button>
       </div>
-
       <div class='grid' style='margin-top:12px'>
-        ${(state._pendingPhotos||[]).slice(0,4).map(src=>`<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
+        ${(state._pendingPhotos||[]).slice(0,4).map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
       </div>
     </div>
 
     <div class='card'>
       <div style='font-weight:900;margin-bottom:10px'>Saved Photos in ${chosenWeek}</div>
       <div class='grid'>
-        ${items.length ? items.map(src=>`<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') : `<div class='note'>No photos for this week yet</div>`}
+        ${items.length ? items.map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') : `<div class='note'>No photos for this week yet</div>`}
       </div>
-    </div>
-  `;
+    </div>`;
 
   $$('.story[data-week]').forEach(el=>{ el.onclick=()=>{ state._photoWeek=el.dataset.week; saveState(); renderPhotos(); }; });
   $('#useCurrentWeek').onclick=()=>{ state._photoWeek=currentWeek; saveState(); renderPhotos(); };
-
   $('#photoInput').onchange=async (e)=>{
     const files=Array.from(e.target.files||[]);
     state._pendingPhotos=[]; saveState();
@@ -431,7 +443,7 @@ function renderPhotos(){
     const wk=state._photoWeek||currentWeek;
     const arr=state.photos[wk]||[];
     (state._pendingPhotos||[]).forEach(p=>arr.push(p));
-    state.photos[wk]=arr; state._pendingPhotos=[]; saveState(); alert('Photos saved ✅'); renderPhotos();
+    state.photos[wk]=arr; state._pendingPhotos=[]; saveState(); renderPhotos();
   };
   $('#clearPending').onclick=()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
   $('#clearPhotos').onclick=()=>{ const wk=state._photoWeek||currentWeek; if(!confirm(`Clear saved photos for week ${wk}?`)) return; delete state.photos[wk]; saveState(); renderPhotos(); };
@@ -441,57 +453,50 @@ function fileToDataURL(file){
   return new Promise((resolve,reject)=>{ const fr=new FileReader(); fr.onload=()=>resolve(fr.result); fr.onerror=reject; fr.readAsDataURL(file); });
 }
 
-// Compare: Daily weight graph (kg) + Workout progress by week (lbs)
+// Compare: Daily weight graph + Workout progress by week
 function renderCompare(){
   app.innerHTML = `
     <div class='card'>
       <div style='font-weight:900'>Compare</div>
-      <div class='note'>Daily Weight chart uses kg. Workout progress uses lbs (from Train).</div>
+      <div class='note'>Daily Weight + Workout Progress by Week.</div>
     </div>
-
     <div class='card'>
       <div style='font-weight:900'>Daily Weight (kg)</div>
       <div class='chartWrap'><div id='chartDaily'></div></div>
     </div>
-
     <div class='card'>
-      <div style='font-weight:900'>Workout Progress by Week (lbs)</div>
+      <div style='font-weight:900'>Workout Progress by Week</div>
       <div class='small'>Week 1 Workout 1 vs Week 2 Workout 1…</div>
       <div class='chartWrap'><div id='chartWorkout'></div></div>
-    </div>
-  `;
+    </div>`;
+
   renderLineChart('#chartDaily', buildDailyWeightSeries());
   renderLineChart('#chartWorkout', buildWorkoutWeeklySeries());
 }
 
-function avg(arr){ return arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null; }
-function round1(n){ return Math.round(n*10)/10; }
-
 function buildDailyWeightSeries(){
-  const entries=Object.entries(state.measurements.dailyWeight)
+  const entries = Object.entries(state.measurements.dailyWeight)
     .map(([date,val])=>({date, val:Number(val)}))
     .filter(x=>!isNaN(x.val))
     .sort((a,b)=>a.date.localeCompare(b.date));
-  const labels=entries.map(x=>x.date);
-  const values=entries.map(x=>x.val);
-  return [{name:'Weight', color:'#2563eb', labels, values}];
+  return [{name:'Weight', color:'#2563eb', labels:entries.map(x=>x.date), values:entries.map(x=>x.val)}];
 }
 
 function buildWorkoutWeeklySeries(){
-  const buckets={}; // wk -> dayIndex -> [weights]
+  const buckets={};
   Object.entries(state.sessions).forEach(([dateKey,sess])=>{
     const wk=weekKey(parseISO(dateKey));
     if(!buckets[wk]) buckets[wk]={};
     if(!buckets[wk][sess.dayIndex]) buckets[wk][sess.dayIndex]=[];
     const all=[];
-    Object.values(sess.exercises||{}).forEach(exObj=>{ (exObj.sets||[]).forEach(s=>{ if(typeof s.weight==='number' && !isNaN(s.weight)) all.push(s.weight); }); });
+    Object.values(sess.exercises||{}).forEach(exObj=>{ (exObj.sets||[]).forEach(s=>{ if(typeof s.weight==='number'&&!isNaN(s.weight)) all.push(s.weight); }); });
     const a=avg(all);
     if(a!==null) buckets[wk][sess.dayIndex].push(round1(a));
   });
   const labels=Object.keys(buckets).sort();
   const colors=['#2563eb','#f97316','#22c55e','#a78bfa','#eab308'];
   const out=[];
-  for(let di=1; di<=5; di++){
+  for(let di=1;di<=5;di++){
     const vals=labels.map(wk=>{ const arr=buckets[wk]?.[di]||[]; const a=avg(arr); return a===null?null:round1(a); });
     out.push({name:`Workout ${di}`, color:colors[di-1], labels, values:vals});
   }
@@ -499,29 +504,30 @@ function buildWorkoutWeeklySeries(){
 }
 
 function renderLineChart(containerSelector, seriesList){
-  const el=$(containerSelector); if(!el) return;
+  const el=$(containerSelector);
   const labels=seriesList[0]?.labels||[];
-  if(!labels.length){ el.innerHTML=`<div class='note'>No data yet. Log some values first.</div>`; return; }
+  if(!el) return;
+  if(!labels.length){ el.innerHTML = `<div class='note'>No data yet.</div>`; return; }
 
-  let all=[]; seriesList.forEach(s=>s.values.forEach(v=>{ if(v!==null && v!==undefined && !isNaN(v)) all.push(v); }));
-  if(!all.length){ el.innerHTML=`<div class='note'>No numeric data yet.</div>`; return; }
+  let all=[];
+  seriesList.forEach(s=>s.values.forEach(v=>{ if(v!==null&&v!==undefined&&!isNaN(v)) all.push(v); }));
+  if(!all.length){ el.innerHTML = `<div class='note'>No numeric data yet.</div>`; return; }
 
   const minV=Math.min(...all), maxV=Math.max(...all);
-  const pad=(maxV-minV)*0.1 || 1;
+  const pad=(maxV-minV)*0.1||1;
   const yMin=minV-pad, yMax=maxV+pad;
 
   const W=900, H=260;
   const margin={l:50,r:20,t:20,b:48};
   const innerW=W-margin.l-margin.r;
   const innerH=H-margin.t-margin.b;
-
-  const x=(i)=> margin.l + (labels.length===1? innerW/2 : (i*(innerW/(labels.length-1))));
-  const y=(v)=> margin.t + (innerH*(1-((v-yMin)/(yMax-yMin))));
+  const x=i=>margin.l+(labels.length===1?innerW/2:(i*(innerW/(labels.length-1))));
+  const y=v=>margin.t+(innerH*(1-((v-yMin)/(yMax-yMin))));
 
   const ticks=3;
   let grid='';
   for(let i=0;i<=ticks;i++){
-    const tv=yMin + (i*(yMax-yMin)/ticks);
+    const tv=yMin+(i*(yMax-yMin)/ticks);
     const yy=y(tv);
     grid += `<line x1='${margin.l}' y1='${yy}' x2='${W-margin.r}' y2='${yy}' stroke='rgba(15,23,42,.10)' />`;
     grid += `<text x='${margin.l-8}' y='${yy+4}' fill='rgba(51,65,85,.75)' font-size='11' text-anchor='end'>${round1(tv)}</text>`;
@@ -538,29 +544,23 @@ function renderLineChart(containerSelector, seriesList){
   });
 
   let paths='', points='';
-  seriesList.forEach((s)=>{
-    let d=''; let started=false;
+  seriesList.forEach(s=>{
+    let d='', started=false;
     for(let i=0;i<labels.length;i++){
       const v=s.values[i];
-      if(v===null || v===undefined || isNaN(v)){ started=false; continue; }
+      if(v===null||v===undefined||isNaN(v)){ started=false; continue; }
       const xx=x(i), yy=y(v);
-      if(!started){ d += `M ${xx} ${yy}`; started=true; }
-      else d += ` L ${xx} ${yy}`;
+      if(!started){ d += `M ${xx} ${yy}`; started=true; } else { d += ` L ${xx} ${yy}`; }
       points += `<circle cx='${xx}' cy='${yy}' r='3' fill='${s.color}' />`;
     }
     paths += `<path d='${d}' fill='none' stroke='${s.color}' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' />`;
   });
 
-  const svg = `<svg class='chart' viewBox='0 0 ${W} ${H}' preserveAspectRatio='none'>
-    ${grid}
+  const svg = `<svg class='chart' viewBox='0 0 ${W} ${H}' preserveAspectRatio='none'>${grid}
     <line x1='${margin.l}' y1='${H-margin.b}' x2='${W-margin.r}' y2='${H-margin.b}' stroke='rgba(15,23,42,.12)' />
-    ${paths}
-    ${points}
-    ${xlabels}
+    ${paths}${points}${xlabels}
   </svg>`;
-
   const legend = `<div class='legend'>${seriesList.map(s=>`<span><i class='dot' style='background:${s.color}'></i>${escapeHTML(s.name)}</span>`).join('')}</div>`;
-
   el.innerHTML = svg + legend;
 }
 
@@ -574,7 +574,7 @@ function boot(){
   setActiveTab('train');
 }
 
-fetch('./plan.json')
-  .then(r=>r.json())
-  .then(data=>{ plan=data; boot(); })
-  .catch(err=>{ console.error(err); app.innerHTML=`<div class='card'><div style='font-weight:900'>Error</div><div class='note'>Could not load plan.json</div></div>`; });
+fetch('./plan.json').then(r=>r.json()).then(data=>{ plan=data; boot(); }).catch(err=>{
+  console.error(err);
+  app.innerHTML = `<div class='card'><div style='font-weight:900'>Error</div><div class='note'>Could not load plan.json</div></div>`;
+});

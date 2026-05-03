@@ -3,6 +3,7 @@
     {
       "dayIndex": 1,
       "title": "Chest + Triceps",
+      "label": "Chest",
       "emoji": "\ud83e\udec0",
       "exercises": [
         {
@@ -45,6 +46,7 @@
     {
       "dayIndex": 2,
       "title": "Back + Biceps (+ Abs)",
+      "label": "Back",
       "emoji": "\ud83e\uddb4",
       "exercises": [
         {
@@ -87,6 +89,7 @@
     {
       "dayIndex": 3,
       "title": "Legs",
+      "label": "Legs",
       "emoji": "\ud83e\uddb5",
       "exercises": [
         {
@@ -129,6 +132,7 @@
     {
       "dayIndex": 4,
       "title": "Shoulders + Abs",
+      "label": "Shoulders",
       "emoji": "\ud83e\uddcd",
       "exercises": [
         {
@@ -166,6 +170,7 @@
     {
       "dayIndex": 5,
       "title": "Arms + Abs",
+      "label": "Arms",
       "emoji": "\ud83d\udcaa",
       "exercises": [
         {
