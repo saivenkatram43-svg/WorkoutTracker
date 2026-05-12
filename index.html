@@ -1,28 +1,32 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang='en'>
 <head>
-<meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>My Workouts v13</title>
-<link rel='stylesheet' href='styles.css'>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1, viewport-fit=cover' />
+  <meta name='apple-mobile-web-app-capable' content='yes' />
+  <meta name='apple-mobile-web-app-title' content='My Workouts' />
+  <meta name='theme-color' content='#3b82f6' />
+  <link rel='manifest' href='./app.webmanifest' />
+  <link rel='apple-touch-icon' href='./icons/icon-180.png' />
+  <title>My Workouts</title>
+  <link rel='stylesheet' href='./styles.css' />
 </head>
 <body>
-<h2>My Workouts</h2>
+  <header class='topbar'>
+    <div class='title'>My Workouts</div>
+    <div class='subtitle'>Train · Measure · Photos · Compare · Data</div>
+  </header>
 
-<div class='calendar' id='calendar'></div>
+  <main id='app' class='container'></main>
 
-<h3>Workout</h3>
-<select id='exerciseSelect'></select>
-<div id='graph'></div>
+  <nav class='tabs'>
+    <button data-tab='train' class='tab active'>Train</button>
+    <button data-tab='measure' class='tab'>Measure</button>
+    <button data-tab='photos' class='tab'>Photos</button>
+    <button data-tab='compare' class='tab'>Compare</button>
+    <button data-tab='data' class='tab'>Data</button>
+  </nav>
 
-<h3>Photos</h3>
-<input type='file' id='photoInput' multiple>
-<button onclick='savePhotos()'>Save</button>
-<div id='photos'></div>
-
-<h3>Data</h3>
-<button onclick='exportData()'>Export</button>
-<input type='file' onchange='importData(event)'>
-
-<script src='app.js'></script>
+  <script src='./app.js'></script>
 </body>
 </html>

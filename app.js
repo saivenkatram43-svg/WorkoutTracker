@@ -1,66 +1,681 @@
+// MyWorkouts v12 (today build)
 
-const state = JSON.parse(localStorage.getItem('v13')) || {photos:{},history:{}};
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-// calendar scroll
-const cal=document.getElementById('calendar');
-for(let i=1;i<=30;i++){
-  const d=document.createElement('div');
-  d.className='day';
-  d.innerText='Day '+i;
-  cal.appendChild(d);
-}
+const STORAGE_KEY = 'mw12';
+let plan = null;
+let state = loadState();
 
-// reps watermark example
-function getLast(ex){return state.history[ex]||{w:'',r:''}}
-
-// Photo storage
-function savePhotos(){
-  const files=document.getElementById('photoInput').files;
-  let week='week1';
-  state.photos[week]=state.photos[week]||[];
-  Array.from(files).forEach(f=>{
-    const r=new FileReader();
-    r.onload=()=>{
-      state.photos[week].push(r.result);
-      localStorage.setItem('v13',JSON.stringify(state));
-      renderPhotos();
-    };
-    r.readAsDataURL(f);
-  });
-}
-
-function renderPhotos(){
-  const div=document.getElementById('photos');
-  div.innerHTML='';
-  (state.photos['week1']||[]).forEach(p=>{
-    const img=document.createElement('img');
-    img.src=p;img.width=80;
-    div.appendChild(img);
-  });
-}
-renderPhotos();
-
-// export import
-function exportData(){
-  const blob=new Blob([JSON.stringify(state)],{type:'app/json'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='backup.json';
-  a.click();
-}
-
-function importData(e){
-  const f=e.target.files[0];
-  const r=new FileReader();
-  r.onload=()=>{
-    localStorage.setItem('v13',r.result);
-    location.reload();
+function loadState(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if(raw){
+    try { return JSON.parse(raw); } catch {}
+  }
+  const base = {
+    sessions: {},
+    measurements: { dailyWeight: {}, weeklyBody: {} },
+    photos: {},
+    lastAssignedDayIndex: 0,
+    _photoWeek: null,
+    _pendingPhotos: [],
+    _compareExercise: ''
   };
-  r.readAsText(f);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(base));
+  return base;
+}
+function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+function isoDate(d){ return d.toISOString().slice(0,10); }
+function parseISO(s){ const [y,m,dd]=s.split('-').map(Number); return new Date(y,m-1,dd); }
+function startOfWeek(d=new Date()){
+  const x=new Date(d);
+  const day=x.getDay()||7;
+  x.setDate(x.getDate()-day+1);
+  x.setHours(0,0,0,0);
+  return x;
+}
+function weekKey(d){ return isoDate(startOfWeek(d)); }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); x.setHours(0,0,0,0); return x; }
+function daysBetween(aISO,bISO){
+  const a=parseISO(aISO).getTime(), b=parseISO(bISO).getTime();
+  return Math.round((b-a)/(1000*60*60*24));
 }
 
-// compare max logic placeholder
-const select=document.getElementById('exerciseSelect');
-['Deadlift','Pullups','Squat'].forEach(x=>{
-  const o=document.createElement('option');o.text=x;select.add(o);
+function nextDayIndex(){ return (state.lastAssignedDayIndex % 5) + 1; }
+
+function ensureExerciseSets(ex){
+  return Array.from({length: ex.sets}, (_,i)=>({ set:i+1, reps: ex.reps, weight: null }));
+}
+
+function buildSessionForDayIndex(dayIndex){
+  const day = plan.cycle.find(x=>x.dayIndex===dayIndex);
+  const exercises = {};
+  day.exercises.forEach(ex=>{ exercises[ex.name] = { sets: ensureExerciseSets(ex) }; });
+  return { dayIndex, done:false, exercises };
+}
+
+function assignSessionIfMissing(dateKey){
+  if(state.sessions[dateKey]) return state.sessions[dateKey];
+  const di = nextDayIndex();
+  state.lastAssignedDayIndex = di;
+  state.sessions[dateKey] = buildSessionForDayIndex(di);
+  saveState();
+  return state.sessions[dateKey];
+}
+
+function setWorkoutForDate(dateKey, newDayIndex){
+  const existing = state.sessions[dateKey];
+  if(existing){
+    const hasData = Object.values(existing.exercises||{}).some(exObj => (exObj.sets||[]).some(s => typeof s.weight==='number' || typeof s.reps==='number'));
+    if(hasData){
+      if(!confirm('Changing workout will reset logged sets for this date. Continue?')) return;
+    }
+  }
+  state.sessions[dateKey] = buildSessionForDayIndex(newDayIndex);
+  state.lastAssignedDayIndex = newDayIndex;
+  saveState();
+}
+
+// previous set performance (weight + reps)
+function getPreviousSet(dateKey, dayIndex, exName, setNum){
+  const keys = Object.keys(state.sessions).sort();
+  const idx = keys.indexOf(dateKey);
+  if(idx<=0) return { last:null, twoWeeks:null };
+  let last=null, twoWeeks=null;
+
+  for(let i=idx-1;i>=0;i--){
+    const k=keys[i];
+    const s=state.sessions[k];
+    if(!s || s.dayIndex!==dayIndex) continue;
+    const setObj = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
+    const w=setObj?.weight;
+    const r=setObj?.reps;
+    if((typeof w==='number'&&!isNaN(w)) || (typeof r==='number'&&!isNaN(r))){
+      last={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
+      break;
+    }
+  }
+
+  for(let i=idx-1;i>=0;i--){
+    const k=keys[i];
+    if(daysBetween(k,dateKey)<14) continue;
+    const s=state.sessions[k];
+    if(!s || s.dayIndex!==dayIndex) continue;
+    const setObj = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
+    const w=setObj?.weight;
+    const r=setObj?.reps;
+    if((typeof w==='number'&&!isNaN(w)) || (typeof r==='number'&&!isNaN(r))){
+      twoWeeks={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
+      break;
+    }
+  }
+
+  return { last, twoWeeks };
+}
+
+function overloadWarningsForDay(dateKey){
+  const session = assignSessionIfMissing(dateKey);
+  const dayIndex = session.dayIndex;
+  const day = plan.cycle.find(x=>x.dayIndex===dayIndex);
+  let count=0;
+  day.exercises.forEach(ex=>{
+    session.exercises[ex.name].sets.forEach(setObj=>{
+      const cur=setObj.weight;
+      if(typeof cur!=='number' || isNaN(cur)) return;
+      const prev=getPreviousSet(dateKey, dayIndex, ex.name, setObj.set);
+      if(prev.twoWeeks && typeof prev.twoWeeks.weight==='number' && cur < (prev.twoWeeks.weight + 1.5)) count++;
+    });
+  });
+  return count;
+}
+
+// UI
+const app = $('#app');
+let currentTab='train';
+let selectedDateKey = isoDate(new Date());
+
+function setActiveTab(tab){
+  currentTab=tab;
+  $$('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  render();
+}
+
+function wireTabs(){
+  $$('.tab').forEach(btn=>btn.addEventListener('click', ()=>setActiveTab(btn.dataset.tab)));
+}
+
+function render(){
+  if(!plan){
+    app.innerHTML = `<div class='card'><div style='font-weight:900'>Loading…</div><div class='note'>Fetching workout plan.</div></div>`;
+    return;
+  }
+  if(currentTab==='train') return renderTrain();
+  if(currentTab==='measure') return renderMeasure();
+  if(currentTab==='photos') return renderPhotos();
+  if(currentTab==='compare') return renderCompare();
+  if(currentTab==='data') return renderData();
+}
+
+function renderTrain(){
+  const baseWeekStart = startOfWeek(parseISO(selectedDateKey));
+  const start = addDays(baseWeekStart, -7);
+  const days = Array.from({length:21}, (_,i)=> addDays(start,i));
+
+  const chips = days.map(d=>{
+    const dk = isoDate(d);
+    const session = state.sessions[dk];
+    const done = session?.done;
+    const di = session?.dayIndex;
+    const isSel = dk===selectedDateKey;
+    const emoji = di ? plan.cycle.find(x=>x.dayIndex===di).emoji : '';
+    return `
+      <div class='dayChip ${done?'done':''} ${isSel?'selected':''}' data-date='${dk}'>
+        <div class='d'>${d.toLocaleDateString(undefined,{weekday:'short'})}</div>
+        <div class='s'>${d.getDate()}</div>
+        <div class='s'>${di?`Day ${di} ${emoji}`:'Tap'}</div>
+      </div>`;
+  }).join('');
+
+  const selSession = assignSessionIfMissing(selectedDateKey);
+  const selDay = plan.cycle.find(x=>x.dayIndex===selSession.dayIndex);
+  const warnCount = overloadWarningsForDay(selectedDateKey);
+  const warnHtml = warnCount ? `<div class='alert'>Overload check: push +1.5 lbs vs 2 weeks ago on some sets 💪</div>` : '';
+
+  app.innerHTML = `
+    ${warnHtml}
+    <div class='card'>
+      <div>
+        <div style='font-weight:900'>Swipe days (scroll) · Completed days turn green</div>
+        <div class='small'>Tap any day to open it</div>
+      </div>
+      <div class='calendarStrip' style='margin-top:12px'>${chips}</div>
+    </div>
+
+    <div class='card'>
+      <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:10px'>
+        <div>
+          <div style='font-weight:900'>Day ${selDay.dayIndex}: ${selDay.title}</div>
+          <div class='small'>${selectedDateKey}</div>
+          <div style='margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap'>
+            <span class='badge'>Workout</span>
+            <select id='workoutSelect' class='input' style='max-width:260px'>
+              ${plan.cycle.map(d=>`<option value='${d.dayIndex}'>Day ${d.dayIndex} · ${d.label}</option>`).join('')}
+            </select>
+            <span class='small'>Choose workout for this date</span>
+          </div>
+        </div>
+        <span class='badge'>${selSession.done?'Done ✅':'Not done'}</span>
+      </div>
+
+      <div class='note' style='margin-top:10px'>Train uses <b>lbs</b>. Placeholders show last weight & last reps for that set.</div>
+      <div style='margin-top:12px'>${selDay.exercises.map(ex=>renderExerciseBlock(selectedDateKey, ex)).join('')}</div>
+
+      <div style='display:flex;gap:10px;margin-top:12px'>
+        <button class='btn' id='markDone'>Mark Workout Done</button>
+        <button class='btn danger' id='clearDay'>Clear This Day</button>
+      </div>
+    </div>`;
+
+  $$('.dayChip[data-date]').forEach(el=>{ el.onclick=()=>{ selectedDateKey = el.dataset.date; renderTrain(); }; });
+  $('#markDone').onclick=()=>{ const s=assignSessionIfMissing(selectedDateKey); s.done=true; saveState(); renderTrain(); };
+  $('#clearDay').onclick=()=>{ if(!confirm('Clear this day log?')) return; delete state.sessions[selectedDateKey]; saveState(); renderTrain(); };
+
+  const sel = $('#workoutSelect');
+  if(sel){
+    sel.value = String(selSession.dayIndex);
+    sel.onchange = ()=>{ setWorkoutForDate(selectedDateKey, Number(sel.value)); renderTrain(); };
+  }
+}
+
+function renderExerciseBlock(dateKey, ex){
+  const session = assignSessionIfMissing(dateKey);
+  const dayIndex = session.dayIndex;
+  const exState = session.exercises[ex.name];
+
+  const rows = exState.sets.map(setObj=>{
+    const prev = getPreviousSet(dateKey, dayIndex, ex.name, setObj.set);
+    const watermark = (prev.last && typeof prev.last.weight==='number') ? `${prev.last.weight} lbs` : '';
+    const repsMark = (prev.last && typeof prev.last.reps==='number') ? `${prev.last.reps}` : '';
+    const wVal = (typeof setObj.weight==='number' && !isNaN(setObj.weight)) ? setObj.weight : '';
+    const rVal = (typeof setObj.reps==='number' && !isNaN(setObj.reps)) ? setObj.reps : '';
+
+    return `
+      <tr>
+        <td><span class='setNum'>${setObj.set}</span></td>
+        <td><input class='setInput' inputmode='decimal' placeholder='${watermark || "lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+        <td><input class='setInput' inputmode='numeric' placeholder='${repsMark || "reps"}' value='${rVal}' data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+      </tr>`;
+  }).join('');
+
+  const emoji = plan.cycle.find(x=>x.dayIndex===dayIndex).emoji;
+
+  return `
+    <div class='exercise'>
+      <div class='exTop'>
+        <div>
+          <div class='exName'>${ex.name}</div>
+          <div class='small'>${ex.sets} sets × ${ex.reps} reps</div>
+        </div>
+        <span class='badge'>${emoji}</span>
+      </div>
+
+      <table class='setTable'>
+        <thead><tr><th>#</th><th>Weight (lbs)</th><th>Reps</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// Save set inputs
+app.addEventListener('input', (e)=>{
+  const t=e.target;
+  if(!(t instanceof HTMLInputElement)) return;
+  if(!t.dataset.kind || !t.dataset.date || !t.dataset.ex || !t.dataset.set) return;
+
+  const dateKey=t.dataset.date;
+  const exName=unescapeAttr(t.dataset.ex);
+  const setNum=Number(t.dataset.set);
+  const kind=t.dataset.kind;
+
+  const session=assignSessionIfMissing(dateKey);
+  const setObj=session.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
+  if(!setObj) return;
+
+  if(kind==='weight'){
+    const w=parseFloat(t.value);
+    setObj.weight = isNaN(w)?null:w;
+  }
+  if(kind==='reps'){
+    const r=parseInt(t.value,10);
+    setObj.reps = isNaN(r)?null:r;
+  }
+  saveState();
 });
+
+// Measure (kg)
+function avg(arr){ return arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null; }
+function round1(n){ return Math.round(n*10)/10; }
+function numOrNull(v){ const n=Number(v); return isNaN(n)?null:n; }
+
+function groupDailyWeightsByWeek(){
+  const grouped={};
+  Object.entries(state.measurements.dailyWeight).forEach(([date,val])=>{
+    const wk=weekKey(parseISO(date));
+    if(!grouped[wk]) grouped[wk]=[];
+    grouped[wk].push({date, val:Number(val)});
+  });
+  Object.keys(grouped).forEach(wk=>grouped[wk].sort((a,b)=>a.date.localeCompare(b.date)));
+  return grouped;
+}
+
+function renderMeasure(){
+  const dk = selectedDateKey;
+  const wk = weekKey(parseISO(dk));
+  const dailyVal = state.measurements.dailyWeight[dk] ?? '';
+  const wb = state.measurements.weeklyBody[wk] || {chest:null,bicep:null,waist:null,thigh:null};
+
+  const grouped = groupDailyWeightsByWeek();
+  const weeks = Object.keys(grouped).sort();
+
+  const weekLists = weeks.map(w=>{
+    const list = grouped[w].map(x=>`<div class='small'>${x.date}: <b>${x.val}</b> kg</div>`).join('');
+    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list || '<div class='note'>No weights</div>'}</div></div>`;
+  }).join('') || `<div class='note'>No daily weights recorded yet</div>`;
+
+  const progRows = weeks.map(w=>{
+    const weights = grouped[w].map(x=>x.val).filter(v=>!isNaN(v));
+    const wAvg = avg(weights);
+    const body = state.measurements.weeklyBody[w] || {};
+    return `<div class='item'><div>
+      <div style='font-weight:900'>Week ${w}</div>
+      <div class='small'>Avg weight: ${wAvg===null?'—':round1(wAvg)+' kg'}</div>
+      <div class='small'>Chest: ${body.chest ?? '—'} · Bicep: ${body.bicep ?? '—'} · Waist: ${body.waist ?? '—'} · Thigh: ${body.thigh ?? '—'}</div>
+    </div></div>`;
+  }).join('') || `<div class='note'>No progression data yet</div>`;
+
+  app.innerHTML = `
+    <div class='card'>
+      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+        <div><div style='font-weight:900'>Daily Weight</div><div class='small'>${dk}</div></div>
+        <button class='btn secondary' id='pickToday'>Today</button>
+      </div>
+      <div class='label'>Weight (kg)</div>
+      <input class='input' id='dailyWeight' inputmode='decimal' value='${dailyVal}' placeholder='e.g., 61.0' />
+      <div style='display:flex;gap:10px;margin-top:12px'>
+        <button class='btn' id='saveDaily'>Record Entry</button>
+        <button class='btn danger' id='clearDaily'>Clear Day</button>
+      </div>
+      <div class='label' style='margin-top:14px'>Weekly daily weights</div>
+      <div class='note'>Shows all daily weights recorded in each week.</div>
+      <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${weekLists}</div>
+    </div>
+
+    <div class='card'>
+      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+        <div><div style='font-weight:900'>Weekly Body Measurements</div><div class='small'>Week of ${wk}</div></div>
+        <span class='badge'>Weekly</span>
+      </div>
+      ${measureField('Chest','chest',wb.chest)}
+      ${measureField('Bicep','bicep',wb.bicep)}
+      ${measureField('Waist','waist',wb.waist)}
+      ${measureField('Thigh','thigh',wb.thigh)}
+      <div style='display:flex;gap:10px;margin-top:12px'>
+        <button class='btn' id='saveWeekly'>Record Entry</button>
+        <button class='btn danger' id='clearWeekly'>Clear Week</button>
+      </div>
+    </div>
+
+    <div class='card'>
+      <div style='font-weight:900'>Progression</div>
+      <div class='note'>Average weight is computed from the weekly daily weights shown above.</div>
+      <div style='margin-top:10px;display:flex;flex-direction:column;gap:10px'>${progRows}</div>
+    </div>`;
+
+  $('#pickToday').onclick = ()=>{ selectedDateKey = isoDate(new Date()); renderMeasure(); };
+  $('#saveDaily').onclick = ()=>{ const v=parseFloat($('#dailyWeight').value); if(isNaN(v)) return alert('Enter a valid number'); state.measurements.dailyWeight[dk]=v; saveState(); alert('Saved ✅'); renderMeasure(); };
+  $('#clearDaily').onclick = ()=>{ if(!confirm('Clear daily weight for this day?')) return; delete state.measurements.dailyWeight[dk]; saveState(); renderMeasure(); };
+  $('#saveWeekly').onclick = ()=>{ state.measurements.weeklyBody[wk] = { chest:numOrNull($('#m_chest').value), bicep:numOrNull($('#m_bicep').value), waist:numOrNull($('#m_waist').value), thigh:numOrNull($('#m_thigh').value) }; saveState(); alert('Saved ✅'); renderMeasure(); };
+  $('#clearWeekly').onclick = ()=>{ if(!confirm('Clear weekly measurements for this week?')) return; delete state.measurements.weeklyBody[wk]; saveState(); renderMeasure(); };
+}
+
+function measureField(label,key,val){
+  const v=(val??'')===null?'':(val??'');
+  return `<div class='label'>${label} (cm)</div><input class='input' id='m_${key}' inputmode='decimal' value='${v}' placeholder='e.g., 95' />`;
+}
+
+// Photos (base64 persisted)
+function renderPhotos(){
+  const allWeeks = Object.keys(state.photos || {}).sort().reverse();
+  const currentWeek = weekKey(parseISO(selectedDateKey));
+  const chosenWeek = state._photoWeek || currentWeek;
+  const items = state.photos[chosenWeek] || [];
+
+  const stories = allWeeks.length ? allWeeks.map(wk => {
+    const first = (state.photos[wk] || [])[0];
+    const stamp = wk.slice(5);
+    const isSel = wk === chosenWeek;
+    return `
+      <div class='story' data-week='${wk}'>
+        <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
+          <div class='storyInner'>
+            ${first ? `<img src='${first}' alt='week ${wk}'/>` : `<div style='font-weight:900'>📸</div>`}
+            <div class='storyStamp'>${stamp}</div>
+          </div>
+        </div>
+        <div class='storyLabel'>Week ${stamp}</div>
+      </div>`;
+  }).join('') : `<div class='note'>No weekly photos yet. Upload your first week below.</div>`;
+
+  const pendingCount = (state._pendingPhotos || []).length;
+
+  app.innerHTML = `
+    <div class='card'>
+      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+        <div><div style='font-weight:900'>Weekly Photo Stories</div><div class='small'>Tap a circle = open that week</div></div>
+        <span class='badge'>Stories</span>
+      </div>
+      <div class='storyBar' style='margin-top:10px'>${stories}</div>
+    </div>
+
+    <div class='card'>
+      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+        <div><div style='font-weight:900'>Selected Week</div><div class='small'>${chosenWeek}</div></div>
+        <div style='display:flex;gap:8px'>
+          <button class='btn secondary' id='useCurrentWeek'>This Week</button>
+          <button class='btn danger' id='clearPhotos'>Clear</button>
+        </div>
+      </div>
+
+      <div class='label'>Choose photos</div>
+      <input class='input' style='padding:10px' id='photoInput' type='file' accept='image/*' multiple />
+
+      <div style='display:flex;gap:10px;margin-top:12px'>
+        <button class='btn' id='savePhotos'>Record Uploads (${pendingCount})</button>
+        <button class='btn secondary' id='clearPending'>Clear Selected</button>
+      </div>
+
+      <div class='note' style='margin-top:10px'>Photos are stored locally and will stay after you close & reopen the app.</div>
+
+      <div class='grid' style='margin-top:12px'>
+        ${(state._pendingPhotos||[]).slice(0,4).map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
+      </div>
+    </div>
+
+    <div class='card'>
+      <div style='font-weight:900;margin-bottom:10px'>Saved Photos in ${chosenWeek}</div>
+      <div class='grid'>
+        ${items.length ? items.map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') : `<div class='note'>No photos for this week yet</div>`}
+      </div>
+    </div>`;
+
+  $$('.story[data-week]').forEach(el=>{ el.onclick=()=>{ state._photoWeek=el.dataset.week; saveState(); renderPhotos(); }; });
+  $('#useCurrentWeek').onclick=()=>{ state._photoWeek=currentWeek; saveState(); renderPhotos(); };
+
+  $('#photoInput').onchange = async (e)=>{
+    const files = Array.from(e.target.files || []);
+    state._pendingPhotos = [];
+    saveState();
+    for(const f of files){
+      const dataUrl = await fileToDataURL(f);
+      state._pendingPhotos.push(dataUrl);
+    }
+    saveState();
+    renderPhotos();
+  };
+
+  $('#savePhotos').onclick = ()=>{
+    const wk = state._photoWeek || currentWeek;
+    const arr = state.photos[wk] || [];
+    (state._pendingPhotos||[]).forEach(p=>arr.push(p));
+    state.photos[wk] = arr;
+    state._pendingPhotos = [];
+    saveState();
+    alert('Photos saved ✅');
+    renderPhotos();
+  };
+
+  $('#clearPending').onclick = ()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
+  $('#clearPhotos').onclick = ()=>{
+    const wk = state._photoWeek || currentWeek;
+    if(!confirm(`Clear saved photos for week ${wk}?`)) return;
+    delete state.photos[wk];
+    saveState();
+    renderPhotos();
+  };
+}
+
+function fileToDataURL(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onload = ()=>resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+
+// Compare (Type A)
+function buildDailyWeightSeries(){
+  const entries = Object.entries(state.measurements.dailyWeight)
+    .map(([date,val])=>({date, val:Number(val)}))
+    .filter(x=>!isNaN(x.val))
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  return [{name:'Weight', color:'#2563eb', labels:entries.map(x=>x.date), values:entries.map(x=>x.val)}];
+}
+
+function buildExerciseMaxSeries(exName){
+  const buckets = {};
+  Object.entries(state.sessions).forEach(([dateKey,sess])=>{
+    const exObj = sess.exercises?.[exName];
+    if(!exObj) return;
+    const weights = (exObj.sets||[]).map(s=>s.weight).filter(v=>typeof v==='number' && !isNaN(v));
+    if(!weights.length) return;
+    const wk = weekKey(parseISO(dateKey));
+    const maxW = Math.max(...weights);
+    buckets[wk] = (buckets[wk]==null) ? maxW : Math.max(buckets[wk], maxW);
+  });
+  const labels = Object.keys(buckets).sort();
+  const values = labels.map(wk=>buckets[wk]);
+  return [{name:'MAX', color:'#2563eb', labels, values}];
+}
+
+function renderCompare(){
+  const exNames = plan.cycle.flatMap(d=>d.exercises.map(e=>e.name));
+  const unique = Array.from(new Set(exNames));
+  if(!state._compareExercise) state._compareExercise = unique[0] || '';
+  const selected = state._compareExercise;
+
+  app.innerHTML = `
+    <div class='card'>
+      <div style='font-weight:900'>Compare</div>
+      <div class='note'>Pick an exercise to see MAX weight per week.</div>
+      <div style='margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap'>
+        <span class='badge'>Exercise</span>
+        <select id='compareExercise' class='input' style='max-width:480px'>
+          ${unique.map(n=>`<option value='${escapeAttr(n)}' ${n===selected?'selected':''}>${escapeHTML(n)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class='card'>
+      <div style='font-weight:900'>${escapeHTML(selected)} — MAX per week (lbs)</div>
+      <div class='chartWrap'><div id='chartExercise'></div></div>
+    </div>
+
+    <div class='card'>
+      <div style='font-weight:900'>Daily Weight (kg)</div>
+      <div class='chartWrap'><div id='chartDaily'></div></div>
+    </div>`;
+
+  renderLineChart('#chartExercise', buildExerciseMaxSeries(selected));
+  renderLineChart('#chartDaily', buildDailyWeightSeries());
+
+  const sel=$('#compareExercise');
+  sel.onchange = ()=>{ state._compareExercise = unescapeAttr(sel.value); saveState(); renderCompare(); };
+}
+
+function renderData(){
+  app.innerHTML = `
+    <div class='card'>
+      <div style='font-weight:900'>Data (Backup)</div>
+      <div class='note'>Export before updating the app. Import later to restore everything (workouts, weights, reps, photos, measurements).</div>
+      <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:12px'>
+        <button class='btn' id='exportBtn'>Export Backup</button>
+        <label class='btn secondary' for='importFile' style='display:inline-flex;align-items:center;gap:8px;cursor:pointer'>Import Backup<input id='importFile' type='file' accept='application/json' style='display:none'></label>
+        <button class='btn danger' id='resetBtn'>Reset Local Data</button>
+      </div>
+    </div>`;
+
+  $('#exportBtn').onclick = ()=>{
+    const blob=new Blob([JSON.stringify(state)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`myworkouts_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  $('#importFile').onchange = (e)=>{
+    const file=e.target.files?.[0];
+    if(!file) return;
+    const fr=new FileReader();
+    fr.onload = ()=>{
+      try{
+        const obj=JSON.parse(fr.result);
+        if(!obj || typeof obj!=='object' || !('sessions' in obj)) throw new Error('Invalid backup');
+        state=obj;
+        saveState();
+        alert('Import complete ✅');
+        renderData();
+      }catch(err){
+        alert('Import failed: '+err.message);
+      }
+    };
+    fr.readAsText(file);
+  };
+
+  $('#resetBtn').onclick = ()=>{
+    if(!confirm('This will erase all local data on this device. Continue?')) return;
+    localStorage.removeItem(STORAGE_KEY);
+    state = loadState();
+    alert('Reset complete');
+    renderData();
+  };
+}
+
+// Shared chart renderer
+function renderLineChart(containerSelector, seriesList){
+  const el=$(containerSelector);
+  if(!el) return;
+  const labels = seriesList[0]?.labels || [];
+  if(!labels.length){ el.innerHTML = `<div class='note'>No data yet.</div>`; return; }
+  let all=[];
+  seriesList.forEach(s=>s.values.forEach(v=>{ if(v!==null && v!==undefined && !isNaN(v)) all.push(v); }));
+  if(!all.length){ el.innerHTML = `<div class='note'>No numeric data yet.</div>`; return; }
+
+  const minV=Math.min(...all), maxV=Math.max(...all);
+  const pad=(maxV-minV)*0.1 || 1;
+  const yMin=minV-pad, yMax=maxV+pad;
+
+  const W=900, H=260;
+  const m={l:50,r:20,t:20,b:48};
+  const innerW=W-m.l-m.r, innerH=H-m.t-m.b;
+  const x=i=>m.l+(labels.length===1?innerW/2:(i*(innerW/(labels.length-1))));
+  const y=v=>m.t+(innerH*(1-((v-yMin)/(yMax-yMin))));
+
+  let grid='';
+  for(let i=0;i<=3;i++){
+    const tv=yMin+(i*(yMax-yMin)/3);
+    const yy=y(tv);
+    grid += `<line x1='${m.l}' y1='${yy}' x2='${W-m.r}' y2='${yy}' stroke='rgba(15,23,42,.10)' />`;
+    grid += `<text x='${m.l-8}' y='${yy+4}' fill='rgba(51,65,85,.75)' font-size='11' text-anchor='end'>${round1(tv)}</text>`;
+  }
+
+  const step=Math.max(1, Math.ceil(labels.length/6));
+  let xlabels='';
+  labels.forEach((lab,i)=>{
+    if(i%step!==0 && i!==labels.length-1) return;
+    xlabels += `<text x='${x(i)}' y='${H-18}' fill='rgba(51,65,85,.75)' font-size='11' text-anchor='middle'>${escapeHTML(lab.slice(5))}</text>`;
+  });
+
+  let paths='', points='';
+  seriesList.forEach(s=>{
+    let d='', started=false;
+    for(let i=0;i<labels.length;i++){
+      const v=s.values[i];
+      if(v===null || v===undefined || isNaN(v)){ started=false; continue; }
+      const xx=x(i), yy=y(v);
+      if(!started){ d += `M ${xx} ${yy}`; started=true; } else { d += ` L ${xx} ${yy}`; }
+      points += `<circle cx='${xx}' cy='${yy}' r='3' fill='${s.color}' />`;
+    }
+    paths += `<path d='${d}' fill='none' stroke='${s.color}' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' />`;
+  });
+
+  const svg = `<svg class='chart' viewBox='0 0 ${W} ${H}' preserveAspectRatio='none'>
+    ${grid}
+    <line x1='${m.l}' y1='${H-m.b}' x2='${W-m.r}' y2='${H-m.b}' stroke='rgba(15,23,42,.12)' />
+    ${paths}${points}${xlabels}
+  </svg>`;
+
+  const legend = `<div class='legend'>${seriesList.map(s=>`<span><i class='dot' style='background:${s.color}'></i>${escapeHTML(s.name)}</span>`).join('')}</div>`;
+
+  el.innerHTML = svg + legend;
+}
+
+function escapeHTML(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeAttr(s){ return escapeHTML(s).replace(/"/g,'&quot;'); }
+function unescapeAttr(s){ return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"'); }
+
+function boot(){
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('./service-worker.js'); }
+  wireTabs();
+  setActiveTab('train');
+}
+
+fetch('./plan.json')
+  .then(r=>r.json())
+  .then(data=>{ plan=data; boot(); })
+  .catch(err=>{
+    console.error(err);
+    app.innerHTML = `<div class='card'><div style='font-weight:900'>Error</div><div class='note'>Could not load plan.json</div></div>`;
+  });
