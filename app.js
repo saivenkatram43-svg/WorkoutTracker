@@ -1,38 +1,195 @@
-// MyWorkouts v12 FIXED
+// MyWorkouts v12.2 (Photos in IndexedDB + Quota fix + Reps watermark)
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+// show runtime errors on screen (helps debugging)
 window.addEventListener('error', (e)=>{
   const app = document.querySelector('#app');
   if(app){
-    app.innerHTML = `<div class='card'><div style='font-weight:900;color:#b91c1c'>App error</div><div class='note'>${String(e.message || e.error || 'Unknown error')}</div></div>`;
+    app.innerHTML = `<div class='card'><div style='font-weight:900;color:#b91c1c'>App error</div><div class='note'>${escapeHTML(String(e.message || e.error || 'Unknown error'))}</div></div>`;
   }
 });
 
-const STORAGE_KEY = 'mw12_fixed';
+// ---- Storage keys ----
+const STORAGE_KEY_NEW = 'mw12_v122';
+const STORAGE_KEY_OLD  = 'mw12_fixed'; // prior builds
+
+// ---- Photos DB (IndexedDB) ----
+const PHOTO_DB_NAME = 'mw_photos_db';
+const PHOTO_DB_VER = 1;
+
+function openPhotoDB(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(PHOTO_DB_NAME, PHOTO_DB_VER);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains('photos')){
+        const store = db.createObjectStore('photos', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('week', 'week', { unique: false });
+      }
+    };
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function addPhotoToDB(week, blob){
+  const db = await openPhotoDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction('photos','readwrite');
+    tx.oncomplete = ()=> db.close();
+    const store = tx.objectStore('photos');
+    const req = store.add({ week, ts: Date.now(), blob });
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function getWeeksFromDB(){
+  const db = await openPhotoDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction('photos','readonly');
+    tx.oncomplete = ()=> db.close();
+    const store = tx.objectStore('photos');
+    const index = store.index('week');
+    const weeks = new Set();
+    const req = index.openCursor();
+    req.onsuccess = (e)=>{
+      const cursor = e.target.result;
+      if(cursor){ weeks.add(cursor.key); cursor.continue(); }
+      else resolve(Array.from(weeks).sort().reverse());
+    };
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function getPhotosForWeek(week){
+  const db = await openPhotoDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction('photos','readonly');
+    tx.oncomplete = ()=> db.close();
+    const store = tx.objectStore('photos');
+    const index = store.index('week');
+    const out = [];
+    const req = index.openCursor(IDBKeyRange.only(week));
+    req.onsuccess = (e)=>{
+      const cursor = e.target.result;
+      if(cursor){ out.push(cursor.value); cursor.continue(); }
+      else { out.sort((a,b)=>b.ts-a.ts); resolve(out); }
+    };
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function clearPhotosForWeek(week){
+  const db = await openPhotoDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction('photos','readwrite');
+    tx.oncomplete = ()=> { db.close(); resolve(true); };
+    const store = tx.objectStore('photos');
+    const index = store.index('week');
+    const req = index.openCursor(IDBKeyRange.only(week));
+    req.onsuccess = (e)=>{
+      const cursor = e.target.result;
+      if(cursor){ cursor.delete(); cursor.continue(); }
+    };
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function fileToJpegBlob(file, maxSize=1280, quality=0.78){
+  const imgUrl = URL.createObjectURL(file);
+  try{
+    const img = await new Promise((resolve, reject)=>{
+      const im = new Image();
+      im.onload = ()=> resolve(im);
+      im.onerror = reject;
+      im.src = imgUrl;
+    });
+
+    const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const blob = await new Promise((resolve)=> canvas.toBlob(resolve, 'image/jpeg', quality));
+    return blob;
+  } finally {
+    URL.revokeObjectURL(imgUrl);
+  }
+}
+
+// ---- App state ----
 let plan = null;
 let state = loadState();
 
-function loadState(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if(raw){
-    try { return JSON.parse(raw); } catch {}
+let _quotaWarned = false;
+function saveState(){
+  try{
+    localStorage.setItem(STORAGE_KEY_NEW, JSON.stringify(state));
+    return true;
+  }catch(err){
+    if(String(err).includes('QuotaExceeded')){
+      if(!_quotaWarned){
+        _quotaWarned = true;
+        alert('Device storage is full. Photos are stored separately now. Use Data tab to Export, then Reset Local Data if needed.');
+      }
+      console.error(err);
+      return false;
+    }
+    console.error(err);
+    return false;
   }
-  const base = {
+}
+
+function defaultState(){
+  return {
     sessions: {},
     measurements: { dailyWeight: {}, weeklyBody: {} },
-    photos: {},
+    // photos stored in IndexedDB; keep only UI helpers here
     lastAssignedDayIndex: 0,
     _photoWeek: null,
     _pendingPhotos: [],
     _compareExercise: ''
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(base));
-  return base;
 }
-function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
+function loadState(){
+  // migration: if new key missing but old exists, migrate and delete old to free quota
+  const rawNew = localStorage.getItem(STORAGE_KEY_NEW);
+  if(rawNew){
+    try { return JSON.parse(rawNew); } catch { /* fallthrough */ }
+  }
+
+  const rawOld = localStorage.getItem(STORAGE_KEY_OLD);
+  if(rawOld){
+    try{
+      const old = JSON.parse(rawOld);
+      const fresh = defaultState();
+      // keep user data
+      if(old.sessions) fresh.sessions = old.sessions;
+      if(old.measurements) fresh.measurements = old.measurements;
+      if(typeof old.lastAssignedDayIndex==='number') fresh.lastAssignedDayIndex = old.lastAssignedDayIndex;
+      // drop legacy photo payloads
+      localStorage.removeItem(STORAGE_KEY_OLD);
+      state = fresh;
+      saveState();
+      return fresh;
+    }catch{}
+  }
+
+  // start new
+  const fresh = defaultState();
+  localStorage.setItem(STORAGE_KEY_NEW, JSON.stringify(fresh));
+  return fresh;
+}
+
+// ---- Date helpers ----
 function isoDate(d){ return d.toISOString().slice(0,10); }
 function parseISO(s){ const [y,m,dd]=s.split('-').map(Number); return new Date(y,m-1,dd); }
 function startOfWeek(d=new Date()){
@@ -49,18 +206,18 @@ function daysBetween(aISO,bISO){
   return Math.round((b-a)/(1000*60*60*24));
 }
 
+// ---- Workout session helpers ----
 function nextDayIndex(){ return (state.lastAssignedDayIndex % 5) + 1; }
 function ensureExerciseSets(ex){
-  return Array.from({length: ex.sets}, (_,i)=>({ set:i+1, reps: ex.reps, weight:null }));
+  // reps should be entered by user; keep targetReps for placeholder
+  return Array.from({length: ex.sets}, (_,i)=>({ set:i+1, reps:null, weight:null, targetReps: ex.reps }));
 }
-
 function buildSessionForDayIndex(dayIndex){
   const day = plan.cycle.find(x=>x.dayIndex===dayIndex);
   const exercises = {};
   day.exercises.forEach(ex=>{ exercises[ex.name] = { sets: ensureExerciseSets(ex) }; });
   return { dayIndex, done:false, exercises };
 }
-
 function assignSessionIfMissing(dateKey){
   if(state.sessions[dateKey]) return state.sessions[dateKey];
   const di = nextDayIndex();
@@ -69,7 +226,6 @@ function assignSessionIfMissing(dateKey){
   saveState();
   return state.sessions[dateKey];
 }
-
 function setWorkoutForDate(dateKey, newDayIndex){
   const existing = state.sessions[dateKey];
   if(existing){
@@ -83,11 +239,12 @@ function setWorkoutForDate(dateKey, newDayIndex){
   saveState();
 }
 
+// previous set performance (for watermark)
 function getPreviousSet(dateKey, dayIndex, exName, setNum){
   const keys = Object.keys(state.sessions).sort();
   const idx = keys.indexOf(dateKey);
-  if(idx<=0) return { last:null, twoWeeks:null };
-  let last=null, twoWeeks=null;
+  if(idx<=0) return { last:null, prevWeek:null };
+  let last=null, prevWeek=null;
 
   for(let i=idx-1;i>=0;i--){
     const k=keys[i], s=state.sessions[k];
@@ -100,19 +257,21 @@ function getPreviousSet(dateKey, dayIndex, exName, setNum){
     }
   }
 
+  // find roughly previous week (>=7 days)
   for(let i=idx-1;i>=0;i--){
     const k=keys[i];
-    if(daysBetween(k,dateKey)<7) continue; // last week
+    if(daysBetween(k,dateKey) < 7) continue;
     const s=state.sessions[k];
     if(!s || s.dayIndex!==dayIndex) continue;
     const setObj = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
     const w=setObj?.weight, r=setObj?.reps;
     if((typeof w==='number'&&!isNaN(w)) || (typeof r==='number'&&!isNaN(r))){
-      twoWeeks={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
+      prevWeek={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
       break;
     }
   }
-  return {last,twoWeeks};
+
+  return { last, prevWeek };
 }
 
 function overloadWarningsForDay(dateKey){
@@ -125,13 +284,13 @@ function overloadWarningsForDay(dateKey){
       const cur=setObj.weight;
       if(typeof cur!=='number' || isNaN(cur)) return;
       const prev=getPreviousSet(dateKey, dayIndex, ex.name, setObj.set);
-      if(prev.twoWeeks && typeof prev.twoWeeks.weight==='number' && cur < (prev.twoWeeks.weight + 1.5)) count++;
+      if(prev.prevWeek && typeof prev.prevWeek.weight==='number' && cur < (prev.prevWeek.weight + 1.5)) count++;
     });
   });
   return count;
 }
 
-// UI state
+// ---- UI routing ----
 const app = $('#app');
 let currentTab='train';
 let selectedDateKey = isoDate(new Date());
@@ -157,6 +316,7 @@ function render(){
   if(currentTab==='data') return renderData();
 }
 
+// ---- Train ----
 function renderTrain(){
   const baseWeekStart = startOfWeek(parseISO(selectedDateKey));
   const start = addDays(baseWeekStart, -7);
@@ -209,7 +369,7 @@ function renderTrain(){
         <span class='badge'>${selSession.done?'Done ✅':'Not done'}</span>
       </div>
 
-      <div class='note' style='margin-top:10px'>Train uses <b>lbs</b>. Reps also show last reps as placeholder.</div>
+      <div class='note' style='margin-top:10px'>Enter your reps yourself. Placeholder shows last reps (or target reps if none). Train uses lbs.</div>
       <div style='margin-top:12px'>${selDay.exercises.map(ex=>renderExerciseBlock(selectedDateKey, ex)).join('')}</div>
 
       <div style='display:flex;gap:10px;margin-top:12px'>
@@ -234,16 +394,17 @@ function renderExerciseBlock(dateKey, ex){
 
   const rows = exState.sets.map(setObj=>{
     const prev = getPreviousSet(dateKey, dayIndex, ex.name, setObj.set);
-    const watermark = (prev.last && typeof prev.last.weight==='number') ? `${prev.last.weight} lbs` : '';
-    const repsMark = (prev.last && typeof prev.last.reps==='number') ? `${prev.last.reps}` : '';
+    const wMark = (prev.last && typeof prev.last.weight==='number') ? `${prev.last.weight} lbs` : '';
+    const rMark = (prev.last && typeof prev.last.reps==='number') ? `${prev.last.reps}` : '';
+
     const wVal = (typeof setObj.weight==='number' && !isNaN(setObj.weight)) ? setObj.weight : '';
     const rVal = (typeof setObj.reps==='number' && !isNaN(setObj.reps)) ? setObj.reps : '';
 
     return `
       <tr>
         <td><span class='setNum'>${setObj.set}</span></td>
-        <td><input class='setInput' inputmode='decimal' placeholder='${watermark || "lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
-        <td><input class='setInput' inputmode='numeric' placeholder='${repsMark || "reps"}' value='${rVal}' data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+        <td><input class='setInput' inputmode='decimal' placeholder='${wMark || "lbs"}' value='${wVal}' data-kind='weight' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
+        <td><input class='setInput' inputmode='numeric' placeholder='${rMark || setObj.targetReps || "reps"}' value='${rVal}' data-kind='reps' data-date='${dateKey}' data-ex='${escapeAttr(ex.name)}' data-set='${setObj.set}' /></td>
       </tr>`;
   }).join('');
 
@@ -253,7 +414,7 @@ function renderExerciseBlock(dateKey, ex){
       <div class='exTop'>
         <div>
           <div class='exName'>${ex.name}</div>
-          <div class='small'>${ex.sets} sets × ${ex.reps} reps</div>
+          <div class='small'>Target: ${ex.sets} sets × ${ex.reps} reps</div>
         </div>
         <span class='badge'>${emoji}</span>
       </div>
@@ -264,7 +425,7 @@ function renderExerciseBlock(dateKey, ex){
     </div>`;
 }
 
-// Save set inputs
+// persist weight/reps
 app.addEventListener('input', (e)=>{
   const t=e.target;
   if(!(t instanceof HTMLInputElement)) return;
@@ -290,7 +451,7 @@ app.addEventListener('input', (e)=>{
   saveState();
 });
 
-// Measure (kg)
+// ---- Measure ----
 function avg(arr){ return arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null; }
 function round1(n){ return Math.round(n*10)/10; }
 function numOrNull(v){ const n=Number(v); return isNaN(n)?null:n; }
@@ -381,101 +542,132 @@ function measureField(label,key,val){
   return `<div class='label'>${label} (cm)</div><input class='input' id='m_${key}' inputmode='decimal' value='${v}' placeholder='e.g., 95' />`;
 }
 
-// Photos persisted as base64
+// ---- Photos (IndexedDB) ----
 function renderPhotos(){
-  const allWeeks = Object.keys(state.photos || {}).sort().reverse();
-  const currentWeek = weekKey(parseISO(selectedDateKey));
-  const chosenWeek = state._photoWeek || currentWeek;
-  const items = state.photos[chosenWeek] || [];
+  (async ()=>{
+    const currentWeek = weekKey(parseISO(selectedDateKey));
+    const chosenWeek = state._photoWeek || currentWeek;
 
-  const stories = allWeeks.length ? allWeeks.map(wk=>{
-    const first=(state.photos[wk]||[])[0];
-    const stamp=wk.slice(5);
-    const isSel=wk===chosenWeek;
-    return `
-      <div class='story' data-week='${wk}'>
-        <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
-          <div class='storyInner'>
-            ${first?`<img src='${first}' alt='week ${wk}'/>`:`<div style='font-weight:900'>📸</div>`}
-            <div class='storyStamp'>${stamp}</div>
+    const allWeeks = await getWeeksFromDB();
+    const weeksToShow = allWeeks.length ? allWeeks : [chosenWeek];
+
+    // Covers
+    const covers = await Promise.all(weeksToShow.map(async wk=>{
+      const photos = await getPhotosForWeek(wk);
+      return { wk, first: photos[0] || null };
+    }));
+
+    const stories = covers.map(({wk, first})=>{
+      const stamp = wk.slice(5);
+      const isSel = wk === chosenWeek;
+      const src = first ? URL.createObjectURL(first.blob) : null;
+      return `
+        <div class='story' data-week='${wk}'>
+          <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
+            <div class='storyInner'>
+              ${src ? `<img src='${src}' alt='week ${wk}'/>` : `<div style='font-weight:900'>📸</div>`}
+              <div class='storyStamp'>${stamp}</div>
+            </div>
+          </div>
+          <div class='storyLabel'>Week ${stamp}</div>
+        </div>`;
+    }).join('');
+
+    const pendingCount = (state._pendingPhotos || []).length;
+
+    app.innerHTML = `
+      <div class='card'>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+          <div><div style='font-weight:900'>Weekly Photo Stories</div><div class='small'>Tap a circle = open that week</div></div>
+          <span class='badge'>Stories</span>
+        </div>
+        <div class='storyBar' style='margin-top:10px'>${stories || `<div class='note'>No weekly photos yet.</div>`}</div>
+      </div>
+
+      <div class='card'>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
+          <div><div style='font-weight:900'>Selected Week</div><div class='small'>${chosenWeek}</div></div>
+          <div style='display:flex;gap:8px'>
+            <button class='btn secondary' id='useCurrentWeek'>This Week</button>
+            <button class='btn danger' id='clearPhotos'>Clear</button>
           </div>
         </div>
-        <div class='storyLabel'>Week ${stamp}</div>
-      </div>`;
-  }).join('') : `<div class='note'>No weekly photos yet. Upload your first week below.</div>`;
 
-  const pendingCount = (state._pendingPhotos||[]).length;
+        <div class='label'>Choose photos</div>
+        <input class='input' style='padding:10px' id='photoInput' type='file' accept='image/*' multiple />
 
-  app.innerHTML = `
-    <div class='card'>
-      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
-        <div><div style='font-weight:900'>Weekly Photo Stories</div><div class='small'>Tap a circle = open that week</div></div>
-        <span class='badge'>Stories</span>
-      </div>
-      <div class='storyBar' style='margin-top:10px'>${stories}</div>
-    </div>
+        <div style='display:flex;gap:10px;margin-top:12px'>
+          <button class='btn' id='savePhotos'>Record Uploads (${pendingCount})</button>
+          <button class='btn secondary' id='clearPending'>Clear Selected</button>
+        </div>
 
-    <div class='card'>
-      <div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>
-        <div><div style='font-weight:900'>Selected Week</div><div class='small'>${chosenWeek}</div></div>
-        <div style='display:flex;gap:8px'>
-          <button class='btn secondary' id='useCurrentWeek'>This Week</button>
-          <button class='btn danger' id='clearPhotos'>Clear</button>
+        <div class='note' style='margin-top:10px'>Photos are stored in IndexedDB and won’t disappear. Images are compressed before saving.</div>
+
+        <div class='grid' style='margin-top:12px'>
+          ${(state._pendingPhotos||[]).slice(0,4).map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
         </div>
       </div>
 
-      <div class='label'>Choose photos</div>
-      <input class='input' style='padding:10px' id='photoInput' type='file' accept='image/*' multiple />
-
-      <div style='display:flex;gap:10px;margin-top:12px'>
-        <button class='btn' id='savePhotos'>Record Uploads (${pendingCount})</button>
-        <button class='btn secondary' id='clearPending'>Clear Selected</button>
+      <div class='card'>
+        <div style='font-weight:900;margin-bottom:10px'>Saved Photos in ${chosenWeek}</div>
+        <div class='grid' id='savedPhotosGrid'><div class='note'>Loading…</div></div>
       </div>
+    `;
 
-      <div class='note' style='margin-top:10px'>Photos are stored locally and persist after reopening the app.</div>
+    // wire week selection
+    $$('.story[data-week]').forEach(el=>{ el.onclick=()=>{ state._photoWeek = el.dataset.week; saveState(); renderPhotos(); }; });
+    $('#useCurrentWeek').onclick=()=>{ state._photoWeek = currentWeek; saveState(); renderPhotos(); };
 
-      <div class='grid' style='margin-top:12px'>
-        ${(state._pendingPhotos||[]).slice(0,4).map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
-      </div>
-    </div>
+    const saved = await getPhotosForWeek(chosenWeek);
+    const grid = $('#savedPhotosGrid');
+    if(saved.length){
+      grid.innerHTML = saved.map(rec=>{
+        const src = URL.createObjectURL(rec.blob);
+        return `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`;
+      }).join('');
+    } else {
+      grid.innerHTML = `<div class='note'>No photos for this week yet</div>`;
+    }
 
-    <div class='card'>
-      <div style='font-weight:900;margin-bottom:10px'>Saved Photos in ${chosenWeek}</div>
-      <div class='grid'>
-        ${items.length?items.map(src=>`<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join(''):`<div class='note'>No photos for this week yet</div>`}
-      </div>
-    </div>`;
+    // preview selection (dataURL in memory + state; safe size)
+    $('#photoInput').onchange = async (e)=>{
+      const files = Array.from(e.target.files || []);
+      state._pendingPhotos = [];
+      for(const f of files){
+        const url = await new Promise((resolve,reject)=>{
+          const fr=new FileReader();
+          fr.onload=()=>resolve(fr.result);
+          fr.onerror=reject;
+          fr.readAsDataURL(f);
+        });
+        state._pendingPhotos.push(url);
+      }
+      saveState();
+      renderPhotos();
+    };
 
-  $$('.story[data-week]').forEach(el=>{ el.onclick=()=>{ state._photoWeek=el.dataset.week; saveState(); renderPhotos(); }; });
-  $('#useCurrentWeek').onclick=()=>{ state._photoWeek=currentWeek; saveState(); renderPhotos(); };
+    $('#savePhotos').onclick = async ()=>{
+      const files = Array.from($('#photoInput').files || []);
+      if(!files.length){ alert('Pick photos first'); return; }
+      for(const f of files){
+        const blob = await fileToJpegBlob(f);
+        await addPhotoToDB(chosenWeek, blob);
+      }
+      state._pendingPhotos = [];
+      saveState();
+      alert('Photos saved ✅');
+      renderPhotos();
+    };
 
-  $('#photoInput').onchange = async (e)=>{
-    const files = Array.from(e.target.files || []);
-    state._pendingPhotos=[]; saveState();
-    for(const f of files){ state._pendingPhotos.push(await fileToDataURL(f)); }
-    saveState(); renderPhotos();
-  };
+    $('#clearPending').onclick = ()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
+    $('#clearPhotos').onclick = async ()=>{ if(!confirm(`Clear saved photos for week ${chosenWeek}?`)) return; await clearPhotosForWeek(chosenWeek); alert('Cleared'); renderPhotos(); };
 
-  $('#savePhotos').onclick=()=>{
-    const wk = state._photoWeek || currentWeek;
-    const arr = state.photos[wk] || [];
-    (state._pendingPhotos||[]).forEach(p=>arr.push(p));
-    state.photos[wk] = arr;
-    state._pendingPhotos = [];
-    saveState();
-    alert('Photos saved ✅');
-    renderPhotos();
-  };
-
-  $('#clearPending').onclick=()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
-  $('#clearPhotos').onclick=()=>{ const wk=state._photoWeek||currentWeek; if(!confirm(`Clear saved photos for week ${wk}?`)) return; delete state.photos[wk]; saveState(); renderPhotos(); };
+  })().catch(err=>{
+    app.innerHTML = `<div class='card'><div style='font-weight:900;color:#b91c1c'>Photos error</div><div class='note'>${escapeHTML(String(err))}</div></div>`;
+  });
 }
 
-function fileToDataURL(file){
-  return new Promise((resolve,reject)=>{ const fr=new FileReader(); fr.onload=()=>resolve(fr.result); fr.onerror=reject; fr.readAsDataURL(file); });
-}
-
-// Compare Type A: MAX per week
+// ---- Compare (Type A, MAX per week) ----
 function buildDailyWeightSeries(){
   const entries = Object.entries(state.measurements.dailyWeight)
     .map(([date,val])=>({date, val:Number(val)}))
@@ -534,17 +726,18 @@ function renderCompare(){
   $('#compareExercise').onchange = (e)=>{ state._compareExercise = unescapeAttr(e.target.value); saveState(); renderCompare(); };
 }
 
-// Data export/import
+// ---- Data export/import ----
 function renderData(){
   app.innerHTML = `
     <div class='card'>
       <div style='font-weight:900'>Data (Backup)</div>
-      <div class='note'>Export before updating. Import later to restore everything (workouts, weights, reps, photos, measurements).</div>
+      <div class='note'>Export your history before updating. Import later to restore workouts, reps, weights, measurements. (Photos stay in IndexedDB.)</div>
       <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:12px'>
         <button class='btn' id='exportBtn'>Export Backup</button>
         <label class='btn secondary' for='importFile' style='display:inline-flex;align-items:center;gap:8px;cursor:pointer'>Import Backup<input id='importFile' type='file' accept='application/json' style='display:none'></label>
         <button class='btn danger' id='resetBtn'>Reset Local Data</button>
       </div>
+      <div class='note' style='margin-top:12px'>If you still see QuotaExceededError, use Reset (after Export).</div>
     </div>`;
 
   $('#exportBtn').onclick = ()=>{
@@ -564,7 +757,8 @@ function renderData(){
       try{
         const obj = JSON.parse(fr.result);
         if(!obj || typeof obj !== 'object' || !('sessions' in obj)) throw new Error('Invalid backup');
-        state = obj;
+        // keep photos in IndexedDB; restore other state
+        state = Object.assign(defaultState(), obj);
         saveState();
         alert('Import complete ✅');
         renderData();
@@ -576,15 +770,17 @@ function renderData(){
   };
 
   $('#resetBtn').onclick = ()=>{
-    if(!confirm('This will erase all local data on this device. Continue?')) return;
-    localStorage.removeItem(STORAGE_KEY);
-    state = loadState();
+    if(!confirm('Reset will erase workouts/measurements from local storage (photos remain). Continue?')) return;
+    localStorage.removeItem(STORAGE_KEY_NEW);
+    localStorage.removeItem(STORAGE_KEY_OLD);
+    state = defaultState();
+    saveState();
     alert('Reset complete');
     renderData();
   };
 }
 
-// chart renderer
+// ---- Chart renderer ----
 function renderLineChart(containerSelector, seriesList){
   const el = $(containerSelector);
   if(!el) return;
@@ -620,7 +816,7 @@ function renderLineChart(containerSelector, seriesList){
   const step = Math.max(1, Math.ceil(labels.length/6));
   let xlabels='';
   labels.forEach((lab,i)=>{
-    if(i%step!==0 && i!==labels.length-1) return;
+    if(i%step!=0 && i!==labels.length-1) return;
     xlabels += `<text x='${x(i)}' y='${H-18}' fill='rgba(51,65,85,.75)' font-size='11' text-anchor='middle'>${escapeHTML(lab.slice(5))}</text>`;
   });
 
@@ -646,7 +842,6 @@ function renderLineChart(containerSelector, seriesList){
   </svg>`;
 
   const legend = `<div class='legend'>${seriesList.map(s=>`<span><i class='dot' style='background:${s.color}'></i>${escapeHTML(s.name)}</span>`).join('')}</div>`;
-
   el.innerHTML = svg + legend;
 }
 

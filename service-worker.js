@@ -1,4 +1,4 @@
-const CACHE='myworkouts-v12-fixed';
+const CACHE='myworkouts-v12-2-idb';
 const ASSETS=[
   './',
   './index.html',
