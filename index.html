@@ -1,31 +1,28 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="My Workouts" />
-  <meta name="theme-color" content="#3b82f6" />
-  <link rel="manifest" href="./app.webmanifest" />
-  <link rel="apple-touch-icon" href="./icons/icon-180.png" />
-  <title>My Workouts</title>
-  <link rel="stylesheet" href="./styles.css" />
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>My Workouts v13</title>
+<link rel='stylesheet' href='styles.css'>
 </head>
 <body>
-  <header class="topbar">
-    <div class="title">My Workouts</div>
-    <div class="subtitle">Train · Measure · Photos · Compare</div>
-  </header>
+<h2>My Workouts</h2>
 
-  <main id="app" class="container"></main>
+<div class='calendar' id='calendar'></div>
 
-  <nav class="tabs">
-    <button data-tab="train" class="tab active">Train</button>
-    <button data-tab="measure" class="tab">Measure</button>
-    <button data-tab="photos" class="tab">Photos</button>
-    <button data-tab="compare" class="tab">Compare</button>
-  </nav>
+<h3>Workout</h3>
+<select id='exerciseSelect'></select>
+<div id='graph'></div>
 
-  <script src="./app.js"></script>
+<h3>Photos</h3>
+<input type='file' id='photoInput' multiple>
+<button onclick='savePhotos()'>Save</button>
+<div id='photos'></div>
+
+<h3>Data</h3>
+<button onclick='exportData()'>Export</button>
+<input type='file' onchange='importData(event)'>
+
+<script src='app.js'></script>
 </body>
 </html>
