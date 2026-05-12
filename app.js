@@ -1,9 +1,16 @@
-// MyWorkouts v12 (today build)
+// MyWorkouts v12 FIXED
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-const STORAGE_KEY = 'mw12';
+window.addEventListener('error', (e)=>{
+  const app = document.querySelector('#app');
+  if(app){
+    app.innerHTML = `<div class='card'><div style='font-weight:900;color:#b91c1c'>App error</div><div class='note'>${String(e.message || e.error || 'Unknown error')}</div></div>`;
+  }
+});
+
+const STORAGE_KEY = 'mw12_fixed';
 let plan = null;
 let state = loadState();
 
@@ -43,9 +50,8 @@ function daysBetween(aISO,bISO){
 }
 
 function nextDayIndex(){ return (state.lastAssignedDayIndex % 5) + 1; }
-
 function ensureExerciseSets(ex){
-  return Array.from({length: ex.sets}, (_,i)=>({ set:i+1, reps: ex.reps, weight: null }));
+  return Array.from({length: ex.sets}, (_,i)=>({ set:i+1, reps: ex.reps, weight:null }));
 }
 
 function buildSessionForDayIndex(dayIndex){
@@ -77,7 +83,6 @@ function setWorkoutForDate(dateKey, newDayIndex){
   saveState();
 }
 
-// previous set performance (weight + reps)
 function getPreviousSet(dateKey, dayIndex, exName, setNum){
   const keys = Object.keys(state.sessions).sort();
   const idx = keys.indexOf(dateKey);
@@ -85,12 +90,10 @@ function getPreviousSet(dateKey, dayIndex, exName, setNum){
   let last=null, twoWeeks=null;
 
   for(let i=idx-1;i>=0;i--){
-    const k=keys[i];
-    const s=state.sessions[k];
+    const k=keys[i], s=state.sessions[k];
     if(!s || s.dayIndex!==dayIndex) continue;
     const setObj = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
-    const w=setObj?.weight;
-    const r=setObj?.reps;
+    const w=setObj?.weight, r=setObj?.reps;
     if((typeof w==='number'&&!isNaN(w)) || (typeof r==='number'&&!isNaN(r))){
       last={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
       break;
@@ -99,25 +102,23 @@ function getPreviousSet(dateKey, dayIndex, exName, setNum){
 
   for(let i=idx-1;i>=0;i--){
     const k=keys[i];
-    if(daysBetween(k,dateKey)<14) continue;
+    if(daysBetween(k,dateKey)<7) continue; // last week
     const s=state.sessions[k];
     if(!s || s.dayIndex!==dayIndex) continue;
     const setObj = s.exercises?.[exName]?.sets?.find(x=>x.set===setNum);
-    const w=setObj?.weight;
-    const r=setObj?.reps;
+    const w=setObj?.weight, r=setObj?.reps;
     if((typeof w==='number'&&!isNaN(w)) || (typeof r==='number'&&!isNaN(r))){
       twoWeeks={date:k, weight:(typeof w==='number'&&!isNaN(w))?w:null, reps:(typeof r==='number'&&!isNaN(r))?r:null};
       break;
     }
   }
-
-  return { last, twoWeeks };
+  return {last,twoWeeks};
 }
 
 function overloadWarningsForDay(dateKey){
-  const session = assignSessionIfMissing(dateKey);
-  const dayIndex = session.dayIndex;
-  const day = plan.cycle.find(x=>x.dayIndex===dayIndex);
+  const session=assignSessionIfMissing(dateKey);
+  const dayIndex=session.dayIndex;
+  const day=plan.cycle.find(x=>x.dayIndex===dayIndex);
   let count=0;
   day.exercises.forEach(ex=>{
     session.exercises[ex.name].sets.forEach(setObj=>{
@@ -130,7 +131,7 @@ function overloadWarningsForDay(dateKey){
   return count;
 }
 
-// UI
+// UI state
 const app = $('#app');
 let currentTab='train';
 let selectedDateKey = isoDate(new Date());
@@ -140,7 +141,6 @@ function setActiveTab(tab){
   $$('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   render();
 }
-
 function wireTabs(){
   $$('.tab').forEach(btn=>btn.addEventListener('click', ()=>setActiveTab(btn.dataset.tab)));
 }
@@ -179,8 +179,9 @@ function renderTrain(){
 
   const selSession = assignSessionIfMissing(selectedDateKey);
   const selDay = plan.cycle.find(x=>x.dayIndex===selSession.dayIndex);
+
   const warnCount = overloadWarningsForDay(selectedDateKey);
-  const warnHtml = warnCount ? `<div class='alert'>Overload check: push +1.5 lbs vs 2 weeks ago on some sets 💪</div>` : '';
+  const warnHtml = warnCount ? `<div class='alert'>Overload check: push +1.5 lbs vs last week on some sets 💪</div>` : '';
 
   app.innerHTML = `
     ${warnHtml}
@@ -208,7 +209,7 @@ function renderTrain(){
         <span class='badge'>${selSession.done?'Done ✅':'Not done'}</span>
       </div>
 
-      <div class='note' style='margin-top:10px'>Train uses <b>lbs</b>. Placeholders show last weight & last reps for that set.</div>
+      <div class='note' style='margin-top:10px'>Train uses <b>lbs</b>. Reps also show last reps as placeholder.</div>
       <div style='margin-top:12px'>${selDay.exercises.map(ex=>renderExerciseBlock(selectedDateKey, ex)).join('')}</div>
 
       <div style='display:flex;gap:10px;margin-top:12px'>
@@ -222,10 +223,8 @@ function renderTrain(){
   $('#clearDay').onclick=()=>{ if(!confirm('Clear this day log?')) return; delete state.sessions[selectedDateKey]; saveState(); renderTrain(); };
 
   const sel = $('#workoutSelect');
-  if(sel){
-    sel.value = String(selSession.dayIndex);
-    sel.onchange = ()=>{ setWorkoutForDate(selectedDateKey, Number(sel.value)); renderTrain(); };
-  }
+  sel.value = String(selSession.dayIndex);
+  sel.onchange = ()=>{ setWorkoutForDate(selectedDateKey, Number(sel.value)); renderTrain(); };
 }
 
 function renderExerciseBlock(dateKey, ex){
@@ -249,7 +248,6 @@ function renderExerciseBlock(dateKey, ex){
   }).join('');
 
   const emoji = plan.cycle.find(x=>x.dayIndex===dayIndex).emoji;
-
   return `
     <div class='exercise'>
       <div class='exTop'>
@@ -259,7 +257,6 @@ function renderExerciseBlock(dateKey, ex){
         </div>
         <span class='badge'>${emoji}</span>
       </div>
-
       <table class='setTable'>
         <thead><tr><th>#</th><th>Weight (lbs)</th><th>Reps</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -320,7 +317,7 @@ function renderMeasure(){
 
   const weekLists = weeks.map(w=>{
     const list = grouped[w].map(x=>`<div class='small'>${x.date}: <b>${x.val}</b> kg</div>`).join('');
-    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list || '<div class='note'>No weights</div>'}</div></div>`;
+    return `<div class='item'><div><div style='font-weight:900'>Week ${w}</div>${list || '<div class=\'note\'>No weights</div>'}</div></div>`;
   }).join('') || `<div class='note'>No daily weights recorded yet</div>`;
 
   const progRows = weeks.map(w=>{
@@ -384,22 +381,22 @@ function measureField(label,key,val){
   return `<div class='label'>${label} (cm)</div><input class='input' id='m_${key}' inputmode='decimal' value='${v}' placeholder='e.g., 95' />`;
 }
 
-// Photos (base64 persisted)
+// Photos persisted as base64
 function renderPhotos(){
   const allWeeks = Object.keys(state.photos || {}).sort().reverse();
   const currentWeek = weekKey(parseISO(selectedDateKey));
   const chosenWeek = state._photoWeek || currentWeek;
   const items = state.photos[chosenWeek] || [];
 
-  const stories = allWeeks.length ? allWeeks.map(wk => {
-    const first = (state.photos[wk] || [])[0];
-    const stamp = wk.slice(5);
-    const isSel = wk === chosenWeek;
+  const stories = allWeeks.length ? allWeeks.map(wk=>{
+    const first=(state.photos[wk]||[])[0];
+    const stamp=wk.slice(5);
+    const isSel=wk===chosenWeek;
     return `
       <div class='story' data-week='${wk}'>
         <div class='storyRing' style='filter:${isSel?'none':'grayscale(.25)'}'>
           <div class='storyInner'>
-            ${first ? `<img src='${first}' alt='week ${wk}'/>` : `<div style='font-weight:900'>📸</div>`}
+            ${first?`<img src='${first}' alt='week ${wk}'/>`:`<div style='font-weight:900'>📸</div>`}
             <div class='storyStamp'>${stamp}</div>
           </div>
         </div>
@@ -407,7 +404,7 @@ function renderPhotos(){
       </div>`;
   }).join('') : `<div class='note'>No weekly photos yet. Upload your first week below.</div>`;
 
-  const pendingCount = (state._pendingPhotos || []).length;
+  const pendingCount = (state._pendingPhotos||[]).length;
 
   app.innerHTML = `
     <div class='card'>
@@ -435,7 +432,7 @@ function renderPhotos(){
         <button class='btn secondary' id='clearPending'>Clear Selected</button>
       </div>
 
-      <div class='note' style='margin-top:10px'>Photos are stored locally and will stay after you close & reopen the app.</div>
+      <div class='note' style='margin-top:10px'>Photos are stored locally and persist after reopening the app.</div>
 
       <div class='grid' style='margin-top:12px'>
         ${(state._pendingPhotos||[]).slice(0,4).map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') || `<div class='note'>No selected photos yet</div>`}
@@ -445,7 +442,7 @@ function renderPhotos(){
     <div class='card'>
       <div style='font-weight:900;margin-bottom:10px'>Saved Photos in ${chosenWeek}</div>
       <div class='grid'>
-        ${items.length ? items.map(src => `<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join('') : `<div class='note'>No photos for this week yet</div>`}
+        ${items.length?items.map(src=>`<div class='card' style='padding:8px;margin:0'><img src='${src}' style='width:100%;border-radius:12px'/></div>`).join(''):`<div class='note'>No photos for this week yet</div>`}
       </div>
     </div>`;
 
@@ -454,17 +451,12 @@ function renderPhotos(){
 
   $('#photoInput').onchange = async (e)=>{
     const files = Array.from(e.target.files || []);
-    state._pendingPhotos = [];
-    saveState();
-    for(const f of files){
-      const dataUrl = await fileToDataURL(f);
-      state._pendingPhotos.push(dataUrl);
-    }
-    saveState();
-    renderPhotos();
+    state._pendingPhotos=[]; saveState();
+    for(const f of files){ state._pendingPhotos.push(await fileToDataURL(f)); }
+    saveState(); renderPhotos();
   };
 
-  $('#savePhotos').onclick = ()=>{
+  $('#savePhotos').onclick=()=>{
     const wk = state._photoWeek || currentWeek;
     const arr = state.photos[wk] || [];
     (state._pendingPhotos||[]).forEach(p=>arr.push(p));
@@ -475,26 +467,15 @@ function renderPhotos(){
     renderPhotos();
   };
 
-  $('#clearPending').onclick = ()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
-  $('#clearPhotos').onclick = ()=>{
-    const wk = state._photoWeek || currentWeek;
-    if(!confirm(`Clear saved photos for week ${wk}?`)) return;
-    delete state.photos[wk];
-    saveState();
-    renderPhotos();
-  };
+  $('#clearPending').onclick=()=>{ state._pendingPhotos=[]; saveState(); renderPhotos(); };
+  $('#clearPhotos').onclick=()=>{ const wk=state._photoWeek||currentWeek; if(!confirm(`Clear saved photos for week ${wk}?`)) return; delete state.photos[wk]; saveState(); renderPhotos(); };
 }
 
 function fileToDataURL(file){
-  return new Promise((resolve,reject)=>{
-    const fr = new FileReader();
-    fr.onload = ()=>resolve(fr.result);
-    fr.onerror = reject;
-    fr.readAsDataURL(file);
-  });
+  return new Promise((resolve,reject)=>{ const fr=new FileReader(); fr.onload=()=>resolve(fr.result); fr.onerror=reject; fr.readAsDataURL(file); });
 }
 
-// Compare (Type A)
+// Compare Type A: MAX per week
 function buildDailyWeightSeries(){
   const entries = Object.entries(state.measurements.dailyWeight)
     .map(([date,val])=>({date, val:Number(val)}))
@@ -550,15 +531,15 @@ function renderCompare(){
   renderLineChart('#chartExercise', buildExerciseMaxSeries(selected));
   renderLineChart('#chartDaily', buildDailyWeightSeries());
 
-  const sel=$('#compareExercise');
-  sel.onchange = ()=>{ state._compareExercise = unescapeAttr(sel.value); saveState(); renderCompare(); };
+  $('#compareExercise').onchange = (e)=>{ state._compareExercise = unescapeAttr(e.target.value); saveState(); renderCompare(); };
 }
 
+// Data export/import
 function renderData(){
   app.innerHTML = `
     <div class='card'>
       <div style='font-weight:900'>Data (Backup)</div>
-      <div class='note'>Export before updating the app. Import later to restore everything (workouts, weights, reps, photos, measurements).</div>
+      <div class='note'>Export before updating. Import later to restore everything (workouts, weights, reps, photos, measurements).</div>
       <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:12px'>
         <button class='btn' id='exportBtn'>Export Backup</button>
         <label class='btn secondary' for='importFile' style='display:inline-flex;align-items:center;gap:8px;cursor:pointer'>Import Backup<input id='importFile' type='file' accept='application/json' style='display:none'></label>
@@ -567,23 +548,23 @@ function renderData(){
     </div>`;
 
   $('#exportBtn').onclick = ()=>{
-    const blob=new Blob([JSON.stringify(state)],{type:'application/json'});
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=`myworkouts_backup_${new Date().toISOString().slice(0,10)}.json`;
+    const blob = new Blob([JSON.stringify(state)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `myworkouts_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
   $('#importFile').onchange = (e)=>{
-    const file=e.target.files?.[0];
+    const file = e.target.files?.[0];
     if(!file) return;
-    const fr=new FileReader();
+    const fr = new FileReader();
     fr.onload = ()=>{
       try{
-        const obj=JSON.parse(fr.result);
-        if(!obj || typeof obj!=='object' || !('sessions' in obj)) throw new Error('Invalid backup');
-        state=obj;
+        const obj = JSON.parse(fr.result);
+        if(!obj || typeof obj !== 'object' || !('sessions' in obj)) throw new Error('Invalid backup');
+        state = obj;
         saveState();
         alert('Import complete ✅');
         renderData();
@@ -603,35 +584,40 @@ function renderData(){
   };
 }
 
-// Shared chart renderer
+// chart renderer
 function renderLineChart(containerSelector, seriesList){
-  const el=$(containerSelector);
+  const el = $(containerSelector);
   if(!el) return;
   const labels = seriesList[0]?.labels || [];
   if(!labels.length){ el.innerHTML = `<div class='note'>No data yet.</div>`; return; }
+
   let all=[];
   seriesList.forEach(s=>s.values.forEach(v=>{ if(v!==null && v!==undefined && !isNaN(v)) all.push(v); }));
   if(!all.length){ el.innerHTML = `<div class='note'>No numeric data yet.</div>`; return; }
 
-  const minV=Math.min(...all), maxV=Math.max(...all);
-  const pad=(maxV-minV)*0.1 || 1;
-  const yMin=minV-pad, yMax=maxV+pad;
+  const minV = Math.min(...all);
+  const maxV = Math.max(...all);
+  const pad = (maxV-minV)*0.1 || 1;
+  const yMin = minV - pad;
+  const yMax = maxV + pad;
 
   const W=900, H=260;
   const m={l:50,r:20,t:20,b:48};
-  const innerW=W-m.l-m.r, innerH=H-m.t-m.b;
-  const x=i=>m.l+(labels.length===1?innerW/2:(i*(innerW/(labels.length-1))));
-  const y=v=>m.t+(innerH*(1-((v-yMin)/(yMax-yMin))));
+  const innerW=W-m.l-m.r;
+  const innerH=H-m.t-m.b;
+
+  const x = (i)=> m.l + (labels.length===1 ? innerW/2 : (i*(innerW/(labels.length-1))));
+  const y = (v)=> m.t + (innerH*(1-((v-yMin)/(yMax-yMin))));
 
   let grid='';
   for(let i=0;i<=3;i++){
-    const tv=yMin+(i*(yMax-yMin)/3);
-    const yy=y(tv);
+    const tv = yMin + (i*(yMax-yMin)/3);
+    const yy = y(tv);
     grid += `<line x1='${m.l}' y1='${yy}' x2='${W-m.r}' y2='${yy}' stroke='rgba(15,23,42,.10)' />`;
     grid += `<text x='${m.l-8}' y='${yy+4}' fill='rgba(51,65,85,.75)' font-size='11' text-anchor='end'>${round1(tv)}</text>`;
   }
 
-  const step=Math.max(1, Math.ceil(labels.length/6));
+  const step = Math.max(1, Math.ceil(labels.length/6));
   let xlabels='';
   labels.forEach((lab,i)=>{
     if(i%step!==0 && i!==labels.length-1) return;
@@ -654,7 +640,9 @@ function renderLineChart(containerSelector, seriesList){
   const svg = `<svg class='chart' viewBox='0 0 ${W} ${H}' preserveAspectRatio='none'>
     ${grid}
     <line x1='${m.l}' y1='${H-m.b}' x2='${W-m.r}' y2='${H-m.b}' stroke='rgba(15,23,42,.12)' />
-    ${paths}${points}${xlabels}
+    ${paths}
+    ${points}
+    ${xlabels}
   </svg>`;
 
   const legend = `<div class='legend'>${seriesList.map(s=>`<span><i class='dot' style='background:${s.color}'></i>${escapeHTML(s.name)}</span>`).join('')}</div>`;
@@ -663,8 +651,8 @@ function renderLineChart(containerSelector, seriesList){
 }
 
 function escapeHTML(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escapeAttr(s){ return escapeHTML(s).replace(/"/g,'&quot;'); }
-function unescapeAttr(s){ return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"'); }
+function escapeAttr(s){ return escapeHTML(s).replace(/\"/g,'&quot;'); }
+function unescapeAttr(s){ return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'\"'); }
 
 function boot(){
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('./service-worker.js'); }
